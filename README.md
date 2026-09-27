@@ -25,9 +25,11 @@ npm test       # run the unit tests (Vitest)
 npm run check  # type-check the app (svelte-check)
 ```
 
-The DefiLlama price tests include one opt-in live test (skipped by default) that hits the
-real API. Run it with:
+Unit tests mock the network. Two opt-in live tests hit the real APIs and are skipped by default:
+`src/lib/transfers.test.ts` (Blockscout and a public Ethereum RPC) and `src/lib/prices.test.ts` (DefiLlama).
+Run them with:
 
 ```sh
-LIVE=1 npm test -- src/lib/prices.test.ts
+LIVE=1 npm test                              # all live tests
+LIVE=1 npm test -- src/lib/prices.test.ts    # only one file
 ```
