@@ -24,3 +24,10 @@ npm run build  # produce a production build in dist/
 npm test       # run the unit tests (Vitest)
 npm run check  # type-check the app (svelte-check)
 ```
+
+The DefiLlama price tests include one opt-in live test (skipped by default) that hits the
+real API. Run it with:
+
+```sh
+LIVE=1 npm test -- src/lib/prices.test.ts
+```
