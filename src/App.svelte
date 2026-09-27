@@ -145,13 +145,13 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Date</th><th>Dir.</th><th class="num">Amount</th><th class="num">Price</th><th class="num">USD value</th><th>Tx</th></tr>
+          <tr><th>Date</th><th>Class</th><th class="num">Amount</th><th class="num">Price</th><th class="num">USD value</th><th>Tx</th></tr>
         </thead>
         <tbody>
           {#each pnl.rows as row}
             <tr>
               <td>{formatDate(row.timestamp)}</td>
-              <td class={row.direction === 'buy' ? 'pos' : 'neg'}>{row.direction}</td>
+              <td class={row.class === 'buy' ? 'pos' : row.class === 'sell' ? 'neg' : ''}>{row.class}</td>
               <td class="num">{formatAmount(row.amount, decimals)}</td>
               <td class="num">{formatUsd(row.price)}</td>
               <td class="num">{formatUsd(row.usdValue)}</td>
