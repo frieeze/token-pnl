@@ -57,24 +57,19 @@ const DEFAULT_RPC_URL = 'https://ethereum-rpc.publicnode.com'
 
 const DEFAULT_BASE_URL = 'https://eth.blockscout.com/api'
 
-// Blockscout page size (`offset` query param). Checked live 2026-09-27 against a busy
-// wallet/token pair (a large exchange wallet vs. USDC/USDT, hundreds of rows): offset
-// values of 1000, 5000, 10000 and 20000 all returned valid JSON (status "1"). Blockscout's
-// own IP rate limit ("Too many requests. Increase limits now at https://dev.blockscout.com",
-// returned as an ordinary `status: "0"` JSON body, not an HTTP error) was hit after a
-// handful of requests in quick succession, well before we could push a page size to
-// failure on data volume alone. The issue's own quick test found offset=20000 returns a
-// non-JSON response on some query. We default to 5000 - comfortably under both the known-bad
-// 20000 and the values that answered cleanly here - and rely on pagination (several
-// requests) rather than one very large page. Override via `opts.pageSize` if needed.
+// Blockscout page size (`offset` query param). Must be at most RESULT_WINDOW; 5000 keeps each
+// response to a few MB. Blockscout's IP rate limit ("Too many requests…") comes back as an
+// ordinary `status: "0"` JSON body, not an HTTP error.
 const DEFAULT_PAGE_SIZE = 5000
 
-// Blockscout's Etherscan-compatible `tokentx` endpoint only ever exposes the first
-// page * offset <= 10,000 rows of a result set; past that it either errors or silently
-// omits rows, so we can't tell whether we've fetched everything. We throw instead of
-// returning a truncated list. Fetching the remainder via block-range continuation
-// (`startblock`/`endblock`) is tracked in https://github.com/frieeze/token-pnl/issues/10.
-const MAX_ROWS = 10_000
+// `tokentx` only exposes page * offset <= 10,000 rows per query; past that it answers
+// "Result window is too large" (checked live 2026-09-27, as was `startblock` with `sort=asc`).
+// A full window can end mid-block and rows have no log index, so its last block is dropped
+// and refetched whole as the start of the next window: no duplicate, no gap.
+const RESULT_WINDOW = 10_000
+
+// Safety cap on the whole history, so a huge wallet fails clearly instead of loading forever.
+const MAX_ROWS = 200_000
 
 // Lazily-created, shared across calls that don't inject their own client, so we don't
 // spin up a new viem client (and its transport) per call.
@@ -105,13 +100,21 @@ interface BlockscoutResponse {
   result: BlockscoutTx[] | string
 }
 
-function buildUrl(baseUrl: string, token: Address, wallet: Address, page: number, pageSize: number): string {
+function buildUrl(
+  baseUrl: string,
+  token: Address,
+  wallet: Address,
+  startblock: string,
+  page: number,
+  pageSize: number,
+): string {
   const params = new URLSearchParams({
     module: 'account',
     action: 'tokentx',
     contractaddress: token,
     address: wallet,
     sort: 'asc',
+    startblock,
     page: String(page),
     offset: String(pageSize),
   })
@@ -126,10 +129,49 @@ async function fetchAllRows(
   pageSize: number,
 ): Promise<BlockscoutTx[]> {
   const rows: BlockscoutTx[] = []
-  let page = 1
+  let startblock = '0'
 
   for (;;) {
-    const url = buildUrl(baseUrl, token, wallet, page, pageSize)
+    const { rows: windowRows, full } = await fetchWindow(token, wallet, fetchFn, baseUrl, pageSize, startblock)
+    // The block we start from was just seen, so an empty continuation means inconsistent data.
+    if (startblock !== '0' && windowRows.length === 0) {
+      throw new Error(`Blockscout returned no transfers from block ${startblock}, which it listed just before; try again`)
+    }
+    if (!full) return rows.concat(windowRows)
+
+    const lastBlock = windowRows[windowRows.length - 1].blockNumber
+    const kept = windowRows.filter((r) => r.blockNumber !== lastBlock)
+    if (kept.length === 0) {
+      throw new Error(
+        `This wallet has at least ${windowRows.length.toLocaleString('en-US')} transfers of this token in block ${lastBlock}; Blockscout cannot list them all`,
+      )
+    }
+    rows.push(...kept)
+    if (rows.length > MAX_ROWS) {
+      throw new Error(
+        `This wallet has more than ${MAX_ROWS.toLocaleString('en-US')} transfers of this token; too many to load`,
+      )
+    }
+    startblock = lastBlock
+  }
+}
+
+/**
+ * Fetches one result window from `startblock`: pages until a short page, or until the next
+ * page would go past Blockscout's 10,000-row cap (`full`: there may be more rows after it).
+ */
+async function fetchWindow(
+  token: Address,
+  wallet: Address,
+  fetchFn: typeof globalThis.fetch,
+  baseUrl: string,
+  pageSize: number,
+  startblock: string,
+): Promise<{ rows: BlockscoutTx[]; full: boolean }> {
+  const rows: BlockscoutTx[] = []
+
+  for (let page = 1; ; page++) {
+    const url = buildUrl(baseUrl, token, wallet, startblock, page, pageSize)
     const res = await fetchFn(url)
     if (!res.ok) {
       let detail: string = res.statusText
@@ -150,22 +192,15 @@ async function fetchAllRows(
     }
 
     if (body.status === '0') {
-      if (/no transactions found/i.test(body.message ?? '')) break
+      if (/no transactions found/i.test(body.message ?? '')) return { rows, full: false }
       throw new Error(`Blockscout error: ${body.message || 'unknown error'}`)
     }
 
     const pageRows = Array.isArray(body.result) ? body.result : []
     rows.push(...pageRows)
-    if (rows.length >= MAX_ROWS) {
-      throw new Error(
-        'This wallet has more than 10,000 transfers of this token; Blockscout cannot list them all yet',
-      )
-    }
-    if (pageRows.length < pageSize) break
-    page += 1
+    if (pageRows.length < pageSize) return { rows, full: false }
+    if ((page + 1) * pageSize > RESULT_WINDOW) return { rows, full: true }
   }
-
-  return rows
 }
 
 function toMovement(row: BlockscoutTx, wallet: Address): Movement | null {
