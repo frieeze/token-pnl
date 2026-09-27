@@ -18,8 +18,10 @@ Amounts are kept as raw integers (`bigint`) and converted with the token's decim
 ## Prices
 
 - Each movement is priced at the token's USD market price at the block timestamp (D4), from DefiLlama.
-- A movement DefiLlama has no price for is **unpriced**.
-- The **current price** is DefiLlama's current USD price. It can also be missing.
+- A movement DefiLlama has no price for is **unpriced**. So is one whose price is not a finite number ≥ 0
+  (bad data from the API is treated as no data).
+- The **current price** is DefiLlama's current USD price. It can also be missing (same rule for bad values).
+  A current price of exactly 0 is a real price.
 
 ## Accounting: weighted average cost (D3)
 
@@ -37,8 +39,14 @@ State: `held` (token quantity), `cost` (USD cost basis of `held`), `realized` (U
 - `realized`: from the rules above.
 - `unrealized = held × currentPrice − cost`. Missing if the current price is missing.
 - `total = realized + unrealized`. Missing if `unrealized` is missing.
+  A missing current price is not an **incomplete** reason (the missing totals already say it);
+  the page shows an explicit "no current price" message instead.
 - Also shown: `held`, `cost`, average cost, total bought and sold (quantity and USD), and the
   per-movement table (date, tx hash, direction, amount, price, USD value).
+- Average cost is missing when nothing is held.
+- Total sold counts everything that left the wallet, including the excess of an oversell.
+- In the per-movement table an unpriced movement shows no price and no USD value (not $0),
+  even though the totals count it at price 0.
 - Gas is ignored (D5).
 
 ## Sanity check
