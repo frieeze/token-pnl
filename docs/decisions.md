@@ -2,12 +2,12 @@
 
 Format: each entry has a status (**Open** / **Decided**), the question, the options, and the outcome with its reason.
 
-## D1. What counts as a "buy"? (Decided for v0, 2026-09-27)
+## D1. What counts as a "buy"? (Decided for v0, 2026-09-27; replaced by D10)
 
 Every token the wallet receives is a buy, whatever its source (swap, transfer, airdrop, bridge).
 Reason: keeps v0 simple. Refine later (e.g. transfers between one's own wallets).
 
-## D2. What counts as a "sell"? (Decided for v0, 2026-09-27)
+## D2. What counts as a "sell"? (Decided for v0, 2026-09-27; replaced by D10)
 
 Every token that leaves the wallet is a sell, whatever its destination.
 Reason: keeps v0 simple and PnL always defined.
@@ -48,3 +48,34 @@ Ethereum mainnet only. Transfers from Blockscout (`eth.blockscout.com`), prices 
 ## D9. Budget (Decided, 2026-09-27)
 
 Free tools first. If free tools prove too limited, the user can provide an Alchemy key and a DefiLlama key.
+
+## D10. Classify movements instead of "every inflow is a buy" (Decided, 2026-09-27)
+
+v0 counted staking, locks, lending and vault deposits, and their withdrawals, as sells and buys, which made the PnL noisy.
+Each movement now gets a class: buy, sell, deposit, withdraw, reward, transfer in, transfer out.
+Signals: the other legs of the same transaction (read from the tx and its receipt on the RPC), round trips to the
+same address, and whether the counterparty is a contract. Rules in [pnl-rules.md](pnl-rules.md#classification).
+The user can override the class of any row; heuristics will never catch every bridge, vault or airdrop.
+Reason: a real trade always has an opposite leg in the same tx; parking tokens in a protocol does not.
+
+## D11. Transfers to and from other wallets (Decided, 2026-09-27)
+
+A transfer out to another wallet (EOA) removes the tokens at their average cost: no realized PnL.
+A transfer in from another wallet counts at market price as its cost basis (as a buy, but not counted in "bought").
+Reason: sending tokens away is not selling them. Listing one's own wallets was considered and left out for now.
+
+## D12. Rewards and airdrops (Decided, 2026-09-27)
+
+Rewards, airdrops and the extra returned by a withdrawal come in with a cost of 0.
+Reason: all their value shows up as profit, when sold or as unrealized PnL.
+
+## D13. Receipt tokens (Decided, 2026-09-27)
+
+stETH, aTokens, vault shares, LP tokens and the like are not valued. "Token out, receipt token minted in the same tx"
+is a deposit, and "receipt token burned, token in" is a withdrawal. The tokens still count as held while deposited.
+Reason: valuing each protocol's receipt token is a project of its own.
+
+## D14. Price from the transaction (Open)
+
+Price trades from what was actually paid in the tx (D4 "later"). The receipts fetched for D10 make this cheap.
+To do after D10 ships.
