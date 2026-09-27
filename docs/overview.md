@@ -10,8 +10,8 @@ and what the remaining balance is worth now.
 
 1. **Collect movements.** All ERC-20 `Transfer` events of `token` where `wallet` is sender or receiver,
    with block, timestamp and tx hash.
-2. **Classify each movement.** Buy (swap in), sell (swap out), transfer in/out (other wallet),
-   mint/airdrop, bridge. This decides how it affects cost basis.
+2. **Classify each movement.** Buy, sell, deposit, withdraw, reward, transfer in/out (D10).
+   This decides how it affects cost basis.
 3. **Price each movement** at its time (the hard part, see below).
 4. **Run the accounting.** Cost basis method on the ordered list of movements, giving realized PnL
    on disposals.
