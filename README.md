@@ -15,7 +15,7 @@ Compute the overall PnL of one wallet on one EVM token.
 
 A single static page: Svelte 5 + Vite + TypeScript, using `viem` for chain-related work. No SvelteKit.
 
-Requires Node 24.
+Requires Node 22.12+ (developed on Node 24, see `.nvmrc`).
 
 ```sh
 npm install    # install dependencies
