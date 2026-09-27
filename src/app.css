@@ -1,9 +1,52 @@
 :root {
   font-family: system-ui, sans-serif;
+  line-height: 1.45;
+  color-scheme: light dark;
+  --text: #1a1a1a;
+  --bg: #fff;
+  --muted: #666;
+  --border: #ddd;
+  --panel: #f4f4f5;
+  --accent: #2856c9;
+  --pos: #16803c;
+  --neg: #c62828;
+  --warn-bg: #fff4d6;
+  --error-bg: #fdecec;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e8e8e8;
+    --bg: #161618;
+    --muted: #9a9a9f;
+    --border: #34343a;
+    --panel: #222226;
+    --accent: #4a74e0;
+    --pos: #4cc27a;
+    --neg: #f07070;
+    --warn-bg: #3a3118;
+    --error-bg: #3a1c1c;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
 }
 
 main {
-  max-width: 640px;
+  max-width: 800px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 1.5rem 1rem 3rem;
+}
+
+a {
+  color: var(--accent);
 }

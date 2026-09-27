@@ -5,6 +5,11 @@ Compute the overall PnL of one wallet on one EVM token.
 **Input:** token address, chain, wallet address
 **Output:** total PnL (realized + unrealized) of that wallet on that token, in USD.
 
+## Usage
+
+Open the page, paste a token address and a wallet address (Ethereum only), and submit.
+The inputs go in the URL (`?token=0x…&wallet=0x…`), so a result can be shared or reloaded.
+
 ## Docs
 
 - [docs/overview.md](docs/overview.md): problem, approach, data sources

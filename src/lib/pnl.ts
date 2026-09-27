@@ -2,8 +2,7 @@
 // Pure module: no network, no Svelte, no clock.
 
 import { formatUnits, type Hash } from 'viem'
-
-export type Direction = 'buy' | 'sell'
+import type { Direction } from './transfers'
 
 /** A movement with its USD price at the block timestamp (`null` when unpriced). */
 export interface PricedMovement {
@@ -69,7 +68,7 @@ export interface PnlResult {
 }
 
 /** A usable USD price, or `null`: prices come from an external API, so bad values count as missing. */
-const validPrice = (price: number | null) => (price !== null && Number.isFinite(price) && price >= 0 ? price : null)
+export const validPrice = (price: number | null) => (price !== null && Number.isFinite(price) && price >= 0 ? price : null)
 
 export function computePnl(input: PnlInput): PnlResult {
   const { decimals, movements } = input

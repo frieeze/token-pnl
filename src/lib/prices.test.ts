@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fetchCurrentPrice, fetchHistoricalPrices } from './prices'
 
+// Same live-test switch as transfers.test.ts; `process` isn't in tsconfig.app.json's `types`.
+declare const process: { env: Record<string, string | undefined> }
+
 const TOKEN = '0x6982508145454Ce325dDbE47a25d4ec3d2311933' as const
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -390,7 +393,7 @@ describe('fetchCurrentPrice', () => {
 
 // Opt-in live test against the real DefiLlama API. Run with:
 //   LIVE=1 npm test -- src/lib/prices.test.ts
-describe.skipIf(!import.meta.env.LIVE)('fetchHistoricalPrices (live)', () => {
+describe.skipIf(!process.env.LIVE)('fetchHistoricalPrices (live)', () => {
   it('prices PEPE at 1727395200 close to $0.0000095', async () => {
     const result = await fetchHistoricalPrices(TOKEN, [1727395200])
     const price = result.get(1727395200)
