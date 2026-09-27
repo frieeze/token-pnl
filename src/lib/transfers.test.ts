@@ -34,6 +34,35 @@ function okResponse(result: unknown) {
   }
 }
 
+/**
+ * A fake Blockscout `tokentx` over `history` (already in chain order): honours `startblock`,
+ * `page` and `offset`, and errors past page x offset = 10,000 like the real one (checked
+ * live 2026-09-27).
+ */
+function fakeBlockscout(history: ReturnType<typeof row>[]) {
+  return vi.fn(async (url: string) => {
+    const q = new URL(url).searchParams
+    const page = Number(q.get('page'))
+    const offset = Number(q.get('offset'))
+    if (page * offset > 10_000) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: '0',
+          message: 'Result window is too large, PageNo x Offset size must be less than or equal to 10000',
+          result: null,
+        }),
+      }
+    }
+    const startblock = Number(q.get('startblock') ?? 0)
+    const rows = history.filter((r) => Number(r.blockNumber) >= startblock).slice((page - 1) * offset, page * offset)
+    if (rows.length === 0) {
+      return { ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) }
+    }
+    return okResponse(rows)
+  })
+}
+
 describe('fetchTransfers', () => {
   it('normalizes a single incoming transfer as a buy', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row()]))
@@ -231,15 +260,57 @@ describe('fetchTransfers', () => {
     )
   })
 
-  it('throws once the accumulated row count reaches the 10,000-result cap', async () => {
-    const page1 = Array.from({ length: 5000 }, (_, i) => row({ hash: `0xa${i}`, blockNumber: String(i + 1) }))
-    const page2 = Array.from({ length: 5000 }, (_, i) => row({ hash: `0xb${i}`, blockNumber: String(i + 5001) }))
-    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse(page1)).mockResolvedValueOnce(okResponse(page2))
+  it('continues past the 10,000-result cap by block range, with no duplicate or lost row at the boundaries', async () => {
+    // 3 rows per block, so every window boundary splits a block: 25,500 rows over 8,500 blocks.
+    const history = Array.from({ length: 25_500 }, (_, i) =>
+      row({ hash: `0x${i}`, blockNumber: String(Math.floor(i / 3) + 1), transactionIndex: String(i % 3) }),
+    )
+    const fetchMock = fakeBlockscout(history)
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock, pageSize: 5000 })).rejects.toThrow(
-      /more than 10,000 transfers/i,
+    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })
+
+    expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
+    const startblocks = fetchMock.mock.calls.map(([url]) => new URL(url).searchParams.get('startblock'))
+    expect(new Set(startblocks).size).toBeGreaterThanOrEqual(3)
+  })
+
+  it('handles a window that ends exactly on the cap: the next window only returns the boundary block', async () => {
+    // 10,000 rows, the last two in the same block.
+    const history = Array.from({ length: 10_000 }, (_, i) =>
+      row({ hash: `0x${i}`, blockNumber: String(Math.min(i + 1, 9999)) }),
+    )
+    const fetchMock = fakeBlockscout(history)
+
+    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })
+
+    expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls[2][0]).toContain('startblock=9999')
+  })
+
+  it('throws a clear error when one block has more transfers than a whole window', async () => {
+    const history = Array.from({ length: 10_001 }, (_, i) => row({ hash: `0x${i}`, blockNumber: '42' }))
+    const fetchMock = fakeBlockscout(history)
+
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+      /at least 10,000 transfers of this token in block 42/i,
     )
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws a clear error past the 200,000-transfer safety cap', async () => {
+    // One row per block, generated on demand: far more history than the safety cap.
+    const fetchMock = vi.fn(async (url: string) => {
+      const q = new URL(url).searchParams
+      const first = Number(q.get('startblock') ?? 0) + (Number(q.get('page')) - 1) * Number(q.get('offset'))
+      return okResponse(
+        Array.from({ length: Number(q.get('offset')) }, (_, i) => row({ blockNumber: String(first + i) })),
+      )
+    })
+
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+      /more than 200,000 transfers/i,
+    )
   })
 
   it('throws on a Blockscout status "0" error that is not "no transactions found"', async () => {
