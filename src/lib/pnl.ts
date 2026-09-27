@@ -2,8 +2,7 @@
 // Pure module: no network, no Svelte, no clock.
 
 import { formatUnits, type Hash } from 'viem'
-
-export type Direction = 'buy' | 'sell'
+import type { Direction } from './transfers'
 
 /** A movement with its USD price at the block timestamp (`null` when unpriced). */
 export interface PricedMovement {
