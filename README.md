@@ -9,3 +9,4 @@ Compute the overall PnL of one wallet on one EVM token.
 
 - [docs/overview.md](docs/overview.md): problem, approach, data sources
 - [docs/decisions.md](docs/decisions.md): decision log (open questions and settled choices)
+- [docs/pnl-rules.md](docs/pnl-rules.md): how the PnL is computed (source of truth for tests)
