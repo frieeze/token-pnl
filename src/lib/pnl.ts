@@ -1,18 +1,19 @@
 // PnL engine: weighted average cost, as specified in docs/pnl-rules.md.
 // Pure module: no network, no Svelte, no clock.
 
-import { formatUnits } from 'viem'
+import { formatUnits, type Hash } from 'viem'
 
 export type Direction = 'buy' | 'sell'
 
 /** A movement with its USD price at the block timestamp (`null` when unpriced). */
 export interface PricedMovement {
-  hash: `0x${string}`
+  hash: Hash
   /** Unix seconds. */
   timestamp: number
   direction: Direction
   /** Raw token amount (smallest unit). */
   amount: bigint
+  /** `null`, or a value that is not a finite number ≥ 0, means unpriced. */
   price: number | null
 }
 
@@ -20,6 +21,7 @@ export interface PnlInput {
   decimals: number
   /** Already in chain order. */
   movements: readonly PricedMovement[]
+  /** `null`, or a value that is not a finite number ≥ 0, means missing. */
   currentPrice: number | null
   onchainBalance: bigint
 }
@@ -52,7 +54,7 @@ export interface PnlFlags {
 
 export interface PnlRow {
   timestamp: number
-  hash: `0x${string}`
+  hash: Hash
   direction: Direction
   amount: bigint
   price: number | null
@@ -66,8 +68,12 @@ export interface PnlResult {
   rows: PnlRow[]
 }
 
+/** A usable USD price, or `null`: prices come from an external API, so bad values count as missing. */
+const validPrice = (price: number | null) => (price !== null && Number.isFinite(price) && price >= 0 ? price : null)
+
 export function computePnl(input: PnlInput): PnlResult {
-  const { decimals, movements, currentPrice } = input
+  const { decimals, movements } = input
+  const currentPrice = validPrice(input.currentPrice)
   const toTokens = (raw: bigint) => Number(formatUnits(raw, decimals))
 
   let held = 0n
@@ -82,14 +88,16 @@ export function computePnl(input: PnlInput): PnlResult {
   const rows: PnlRow[] = []
 
   for (const m of movements) {
+    if (m.amount < 0n) throw new RangeError(`Negative amount in movement ${m.hash}`)
+    const price = validPrice(m.price)
+    if (price === null) unpricedCount += 1
     const q = toTokens(m.amount)
-    const p = m.price ?? 0
-    if (m.price === null) unpricedCount += 1
+    const usd = q * (price ?? 0)
     if (m.direction === 'buy') {
       held += m.amount
-      cost += q * p
+      cost += usd
       boughtQuantity += m.amount
-      boughtUsd += q * p
+      boughtUsd += usd
     } else {
       // Oversell clamp: only the part covered by `held` carries cost; the excess
       // leaves at average cost 0, so all its proceeds are realized.
@@ -98,19 +106,19 @@ export function computePnl(input: PnlInput): PnlResult {
       // A sell that empties the position removes the whole remaining cost,
       // so cost is exactly 0 on a full exit (no float dust).
       const removedCost = covered === held ? cost : toTokens(covered) * (cost / toTokens(held))
-      realized += q * p - removedCost
+      realized += usd - removedCost
       cost -= removedCost
       held -= covered
       soldQuantity += m.amount
-      soldUsd += q * p
+      soldUsd += usd
     }
     rows.push({
       timestamp: m.timestamp,
       hash: m.hash,
       direction: m.direction,
       amount: m.amount,
-      price: m.price,
-      usdValue: m.price === null ? null : q * m.price,
+      price,
+      usdValue: price === null ? null : usd,
     })
   }
 

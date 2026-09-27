@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { computePnl, type PricedMovement } from './pnl'
 
-// Helpers: 18-decimals token, amounts written in whole tokens.
+// Helpers: 18-decimals token, amounts written in whole tokens (or raw units with `{ raw }`).
 const DEC = 18
 const units = (tokens: bigint) => tokens * 10n ** 18n
 
 let seq = 0
-function mv(direction: 'buy' | 'sell', tokens: bigint, price: number | null): PricedMovement {
+function mv(direction: 'buy' | 'sell', amount: bigint | { raw: bigint }, price: number | null): PricedMovement {
   seq += 1
   return {
     hash: `0x${seq.toString(16).padStart(64, '0')}`,
     timestamp: 1_700_000_000 + seq,
     direction,
-    amount: units(tokens),
+    amount: typeof amount === 'bigint' ? units(amount) : amount.raw,
     price,
   }
 }
@@ -38,13 +38,13 @@ describe('computePnl', () => {
     // buy 100 @ 2 → held 100, cost 200, avg 2
     // unrealized = 100*3 - 200 = 100; realized 0; total 100
     expect(r.totals.held).toBe(units(100n))
-    expect(r.totals.cost).toBeCloseTo(200)
-    expect(r.totals.averageCost).toBeCloseTo(2)
+    expect(r.totals.cost).toBeCloseTo(200, 9)
+    expect(r.totals.averageCost).toBeCloseTo(2, 9)
     expect(r.totals.realized).toBe(0)
-    expect(r.totals.unrealized).toBeCloseTo(100)
-    expect(r.totals.total).toBeCloseTo(100)
+    expect(r.totals.unrealized).toBeCloseTo(100, 9)
+    expect(r.totals.total).toBeCloseTo(100, 9)
     expect(r.totals.boughtQuantity).toBe(units(100n))
-    expect(r.totals.boughtUsd).toBeCloseTo(200)
+    expect(r.totals.boughtUsd).toBeCloseTo(200, 9)
     expect(r.totals.soldQuantity).toBe(0n)
     expect(r.totals.soldUsd).toBe(0)
     expect(r.flags.incomplete).toBe(false)
@@ -63,16 +63,16 @@ describe('computePnl', () => {
     // sell 50 @ 4 → realized = 50*(4-2) = 100, cost = 400 - 50*2 = 300, held 150
     // unrealized = 150*5 - 300 = 450; total = 100 + 450 = 550
     expect(r.totals.held).toBe(units(150n))
-    expect(r.totals.cost).toBeCloseTo(300)
-    expect(r.totals.averageCost).toBeCloseTo(2)
-    expect(r.totals.realized).toBeCloseTo(100)
-    expect(r.totals.unrealized).toBeCloseTo(450)
-    expect(r.totals.total).toBeCloseTo(550)
+    expect(r.totals.cost).toBeCloseTo(300, 9)
+    expect(r.totals.averageCost).toBeCloseTo(2, 9)
+    expect(r.totals.realized).toBeCloseTo(100, 9)
+    expect(r.totals.unrealized).toBeCloseTo(450, 9)
+    expect(r.totals.total).toBeCloseTo(550, 9)
     // bought 200 for 100 + 300 = 400 USD; sold 50 for 50*4 = 200 USD
     expect(r.totals.boughtQuantity).toBe(units(200n))
-    expect(r.totals.boughtUsd).toBeCloseTo(400)
+    expect(r.totals.boughtUsd).toBeCloseTo(400, 9)
     expect(r.totals.soldQuantity).toBe(units(50n))
-    expect(r.totals.soldUsd).toBeCloseTo(200)
+    expect(r.totals.soldUsd).toBeCloseTo(200, 9)
     // row USD values: 100*1, 100*3, 50*4
     expect(r.rows.map((row) => row.usdValue)).toEqual([100, 300, 200])
     expect(r.rows.map((row) => row.direction)).toEqual(['buy', 'buy', 'sell'])
@@ -95,8 +95,8 @@ describe('computePnl', () => {
     expect(r.totals.cost).toBe(0)
     expect(r.totals.averageCost).toBeNull()
     expect(r.totals.unrealized).toBe(0)
-    expect(r.totals.realized).toBeCloseTo(4.8)
-    expect(r.totals.total).toBeCloseTo(4.8)
+    expect(r.totals.realized).toBeCloseTo(4.8, 9)
+    expect(r.totals.total).toBeCloseTo(4.8, 9)
     expect(r.flags.incomplete).toBe(false)
   })
 
@@ -106,11 +106,11 @@ describe('computePnl', () => {
     // buy 10 @ 5 → cost 50, avg 5
     // sell 4 @ 2 → realized = 4*(2-5) = -12, cost = 50 - 20 = 30, held 6
     // unrealized = 6*1 - 30 = -24; total = -12 + -24 = -36
-    expect(r.totals.realized).toBeCloseTo(-12)
-    expect(r.totals.cost).toBeCloseTo(30)
-    expect(r.totals.unrealized).toBeCloseTo(-24)
-    expect(r.totals.total).toBeCloseTo(-36)
-    expect(r.totals.soldUsd).toBeCloseTo(8) // 4*2
+    expect(r.totals.realized).toBeCloseTo(-12, 9)
+    expect(r.totals.cost).toBeCloseTo(30, 9)
+    expect(r.totals.unrealized).toBeCloseTo(-24, 9)
+    expect(r.totals.total).toBeCloseTo(-36, 9)
+    expect(r.totals.soldUsd).toBeCloseTo(8, 9) // 4*2
   })
 
   it('unpriced buy: counts at price 0 and flags incomplete', () => {
@@ -119,12 +119,12 @@ describe('computePnl', () => {
     // buy 10 @ 2 → cost 20; buy 10 unpriced → price 0, held 20, cost 20, avg 1
     // unrealized = 20*3 - 20 = 40; realized 0; total 40
     expect(r.totals.held).toBe(units(20n))
-    expect(r.totals.cost).toBeCloseTo(20)
-    expect(r.totals.averageCost).toBeCloseTo(1)
-    expect(r.totals.unrealized).toBeCloseTo(40)
-    expect(r.totals.total).toBeCloseTo(40)
+    expect(r.totals.cost).toBeCloseTo(20, 9)
+    expect(r.totals.averageCost).toBeCloseTo(1, 9)
+    expect(r.totals.unrealized).toBeCloseTo(40, 9)
+    expect(r.totals.total).toBeCloseTo(40, 9)
     expect(r.totals.boughtQuantity).toBe(units(20n))
-    expect(r.totals.boughtUsd).toBeCloseTo(20) // 10*2 + 10*0
+    expect(r.totals.boughtUsd).toBeCloseTo(20, 9) // 10*2 + 10*0
     expect(r.flags.incomplete).toBe(true)
     expect(r.flags.reasons).toEqual(['unpriced'])
     expect(r.flags.unpricedCount).toBe(1)
@@ -139,11 +139,11 @@ describe('computePnl', () => {
     // buy 10 @ 4 → cost 40, avg 4
     // sell 5 unpriced (p = 0) → realized = 5*(0-4) = -20, cost = 40 - 20 = 20, held 5
     // unrealized = 5*6 - 20 = 10; total = -20 + 10 = -10
-    expect(r.totals.realized).toBeCloseTo(-20)
-    expect(r.totals.cost).toBeCloseTo(20)
+    expect(r.totals.realized).toBeCloseTo(-20, 9)
+    expect(r.totals.cost).toBeCloseTo(20, 9)
     expect(r.totals.held).toBe(units(5n))
-    expect(r.totals.unrealized).toBeCloseTo(10)
-    expect(r.totals.total).toBeCloseTo(-10)
+    expect(r.totals.unrealized).toBeCloseTo(10, 9)
+    expect(r.totals.total).toBeCloseTo(-10, 9)
     expect(r.totals.soldQuantity).toBe(units(5n))
     expect(r.totals.soldUsd).toBe(0)
     expect(r.flags.incomplete).toBe(true)
@@ -155,8 +155,8 @@ describe('computePnl', () => {
     const movements = [mv('buy', 10n, 1), mv('sell', 4n, 3)]
     const r = computePnl({ decimals: DEC, movements, currentPrice: null, onchainBalance: units(6n) })
     // buy 10 @ 1 → cost 10, avg 1; sell 4 @ 3 → realized = 4*(3-1) = 8, cost 6, held 6
-    expect(r.totals.realized).toBeCloseTo(8)
-    expect(r.totals.cost).toBeCloseTo(6)
+    expect(r.totals.realized).toBeCloseTo(8, 9)
+    expect(r.totals.cost).toBeCloseTo(6, 9)
     expect(r.totals.unrealized).toBeNull()
     expect(r.totals.total).toBeNull()
     // a missing current price is not an "incomplete" reason: the null totals already say it
@@ -171,12 +171,12 @@ describe('computePnl', () => {
     // realized = 25, held 0 (clamped), cost 0; unrealized = 0*4 - 0 = 0; total 25
     expect(r.totals.held).toBe(0n)
     expect(r.totals.cost).toBe(0)
-    expect(r.totals.realized).toBeCloseTo(25)
+    expect(r.totals.realized).toBeCloseTo(25, 9)
     expect(r.totals.unrealized).toBe(0)
-    expect(r.totals.total).toBeCloseTo(25)
+    expect(r.totals.total).toBeCloseTo(25, 9)
     // sold quantity is what left the wallet: 15; sold USD = 15*3 = 45
     expect(r.totals.soldQuantity).toBe(units(15n))
-    expect(r.totals.soldUsd).toBeCloseTo(45)
+    expect(r.totals.soldUsd).toBeCloseTo(45, 9)
     expect(r.flags.incomplete).toBe(true)
     expect(r.flags.reasons).toEqual(['oversell'])
     expect(r.flags.oversell).toBe(true)
@@ -191,22 +191,22 @@ describe('computePnl', () => {
     expect(r.flags.balanceMismatch).toBe(true)
     expect(r.flags.incomplete).toBe(false)
     expect(r.totals.held).toBe(units(100n))
-    expect(r.totals.cost).toBeCloseTo(200)
-    expect(r.totals.unrealized).toBeCloseTo(100)
+    expect(r.totals.cost).toBeCloseTo(200, 9)
+    expect(r.totals.unrealized).toBeCloseTo(100, 9)
   })
 
   it('uses the token decimals for fractional amounts', () => {
     // 6-decimals token: 1_500_000 raw = 1.5 tokens, 500_000 raw = 0.5 tokens
-    const buy = { ...mv('buy', 0n, 2), amount: 1_500_000n }
-    const sell = { ...mv('sell', 0n, 4), amount: 500_000n }
+    const buy = mv('buy', { raw: 1_500_000n }, 2)
+    const sell = mv('sell', { raw: 500_000n }, 4)
     const r = computePnl({ decimals: 6, movements: [buy, sell], currentPrice: 3, onchainBalance: 1_000_000n })
     // buy 1.5 @ 2 → cost 3, avg 2; sell 0.5 @ 4 → realized = 0.5*(4-2) = 1, cost 2, held 1.0
     // unrealized = 1*3 - 2 = 1; total 2
     expect(r.totals.held).toBe(1_000_000n)
-    expect(r.totals.cost).toBeCloseTo(2)
-    expect(r.totals.realized).toBeCloseTo(1)
-    expect(r.totals.unrealized).toBeCloseTo(1)
-    expect(r.totals.total).toBeCloseTo(2)
+    expect(r.totals.cost).toBeCloseTo(2, 9)
+    expect(r.totals.realized).toBeCloseTo(1, 9)
+    expect(r.totals.unrealized).toBeCloseTo(1, 9)
+    expect(r.totals.total).toBeCloseTo(2, 9)
     expect(r.rows.map((row) => row.usdValue)).toEqual([3, 2]) // 1.5*2, 0.5*4
   })
 
@@ -227,8 +227,8 @@ describe('computePnl', () => {
     const r = computePnl({ decimals: DEC, movements, currentPrice: 1, onchainBalance: 0n })
     // buy 10 unpriced → cost 0; sell 12 @ 1: 10 covered at avg 0 + 2 excess at avg 0
     // realized = 12*1 - 0 = 12; held 0, cost 0, unrealized 0, total 12
-    expect(r.totals.realized).toBeCloseTo(12)
-    expect(r.totals.total).toBeCloseTo(12)
+    expect(r.totals.realized).toBeCloseTo(12, 9)
+    expect(r.totals.total).toBeCloseTo(12, 9)
     expect(r.flags.incomplete).toBe(true)
     expect(r.flags.reasons).toEqual(['unpriced', 'oversell'])
     expect(r.flags.unpricedCount).toBe(1)
@@ -237,14 +237,68 @@ describe('computePnl', () => {
   it('a sell with nothing held is entirely excess (no division by zero)', () => {
     const r = computePnl({ decimals: DEC, movements: [mv('sell', 5n, 2)], currentPrice: 2, onchainBalance: 0n })
     // held 0 → whole sell is excess at avg 0: realized = 5*2 = 10, held 0, cost 0
-    expect(r.totals.realized).toBeCloseTo(10)
+    expect(r.totals.realized).toBeCloseTo(10, 9)
     expect(r.totals.cost).toBe(0)
     expect(r.totals.held).toBe(0n)
     expect(r.flags.oversell).toBe(true)
   })
 
+  it('a sell after a full exit is entirely excess and flags oversell', () => {
+    const movements = [mv('buy', 10n, 1), mv('sell', 10n, 2), mv('sell', 5n, 4)]
+    const r = computePnl({ decimals: DEC, movements, currentPrice: 4, onchainBalance: 0n })
+    // buy 10 @ 1 → cost 10; sell 10 @ 2 → realized 10*(2-1) = 10, held 0, cost 0
+    // sell 5 @ 4 with nothing held → excess at avg 0: realized += 5*4 = 20 → 30
+    expect(r.totals.realized).toBeCloseTo(30, 9)
+    expect(r.totals.held).toBe(0n)
+    expect(r.totals.cost).toBe(0)
+    expect(r.flags.oversell).toBe(true)
+    expect(r.flags.reasons).toEqual(['oversell'])
+  })
+
+  it('an unpriced sell that oversells: covered part leaves at avg cost, proceeds 0', () => {
+    const movements = [mv('buy', 10n, 2), mv('sell', 15n, null)]
+    const r = computePnl({ decimals: DEC, movements, currentPrice: 3, onchainBalance: 0n })
+    // buy 10 @ 2 → cost 20, avg 2; sell 15 unpriced (p = 0): 10 covered at avg 2, 5 excess at avg 0
+    // realized = 15*0 - 10*2 = -20; held 0, cost 0, unrealized 0, total -20
+    expect(r.totals.realized).toBeCloseTo(-20, 9)
+    expect(r.totals.total).toBeCloseTo(-20, 9)
+    expect(r.totals.held).toBe(0n)
+    expect(r.flags.reasons).toEqual(['unpriced', 'oversell'])
+  })
+
+  it('a current price of 0 is a real price: unrealized = -cost', () => {
+    const r = computePnl({ decimals: DEC, movements: [mv('buy', 10n, 3)], currentPrice: 0, onchainBalance: units(10n) })
+    // buy 10 @ 3 → cost 30; unrealized = 10*0 - 30 = -30
+    expect(r.totals.unrealized).toBeCloseTo(-30, 9)
+    expect(r.totals.total).toBeCloseTo(-30, 9)
+    expect(r.flags.incomplete).toBe(false)
+  })
+
+  it.each([NaN, Infinity, -1])('a movement price of %s is treated as unpriced', (bad) => {
+    const movements = [mv('buy', 10n, 2), mv('buy', 10n, bad)]
+    const r = computePnl({ decimals: DEC, movements, currentPrice: 3, onchainBalance: units(20n) })
+    // same as "unpriced buy": cost 20, held 20, unrealized = 20*3 - 20 = 40
+    expect(r.totals.cost).toBeCloseTo(20, 9)
+    expect(r.totals.unrealized).toBeCloseTo(40, 9)
+    expect(r.flags.unpricedCount).toBe(1)
+    expect(r.flags.reasons).toEqual(['unpriced'])
+    expect(r.rows[1]).toMatchObject({ price: null, usdValue: null })
+  })
+
+  it.each([NaN, Infinity, -1])('a current price of %s is treated as missing', (bad) => {
+    const r = computePnl({ decimals: DEC, movements: [mv('buy', 10n, 2)], currentPrice: bad, onchainBalance: units(10n) })
+    expect(r.totals.unrealized).toBeNull()
+    expect(r.totals.total).toBeNull()
+  })
+
+  it('rejects a negative amount (a bug upstream, not market data)', () => {
+    expect(() =>
+      computePnl({ decimals: DEC, movements: [mv('buy', -1n, 2)], currentPrice: 2, onchainBalance: 0n }),
+    ).toThrow(RangeError)
+  })
+
   it('accepts movements shaped like #2 transfers spread with a price', () => {
-    // Same shape as the Movement exported by src/lib/transfers.ts (#2), plus `price`.
+    // The Movement shape specified for src/lib/transfers.ts (#2), plus `price`.
     const movement = {
       hash: '0xabc' as const,
       blockNumber: 19_000_000n,
@@ -260,8 +314,8 @@ describe('computePnl', () => {
       onchainBalance: units(2n),
     })
     // buy 2 @ 5 → cost 10; unrealized = 2*5 - 10 = 0
-    expect(r.totals.cost).toBeCloseTo(10)
-    expect(r.totals.unrealized).toBeCloseTo(0)
+    expect(r.totals.cost).toBeCloseTo(10, 9)
+    expect(r.totals.unrealized).toBeCloseTo(0, 9)
     expect(r.rows[0]).toEqual({
       timestamp: 1_700_000_000,
       hash: '0xabc',
