@@ -25,10 +25,11 @@ npm test       # run the unit tests (Vitest)
 npm run check  # type-check the app (svelte-check)
 ```
 
-Unit tests mock the network. `src/lib/transfers.test.ts` also has one opt-in live test that
-hits the real Blockscout API and a public Ethereum RPC; it's skipped by default and only runs
-with:
+Unit tests mock the network. Two opt-in live tests hit the real APIs and are skipped by default:
+`src/lib/transfers.test.ts` (Blockscout and a public Ethereum RPC) and `src/lib/prices.test.ts` (DefiLlama).
+Run them with:
 
 ```sh
-LIVE=1 npm test
+LIVE=1 npm test                              # all live tests
+LIVE=1 npm test -- src/lib/prices.test.ts    # only one file
 ```
