@@ -57,27 +57,15 @@ const DEFAULT_RPC_URL = 'https://ethereum-rpc.publicnode.com'
 
 const DEFAULT_BASE_URL = 'https://eth.blockscout.com/api'
 
-// Blockscout page size (`offset` query param). Checked live 2026-09-27 against a busy
-// wallet/token pair (a large exchange wallet vs. USDC/USDT, hundreds of rows): offset
-// values of 1000, 5000, 10000 and 20000 all returned valid JSON (status "1"). Blockscout's
-// own IP rate limit ("Too many requests. Increase limits now at https://dev.blockscout.com",
-// returned as an ordinary `status: "0"` JSON body, not an HTTP error) was hit after a
-// handful of requests in quick succession, well before we could push a page size to
-// failure on data volume alone. The issue's own quick test found offset=20000 returns a
-// non-JSON response on some query. We default to 5000 - comfortably under both the known-bad
-// 20000 and the values that answered cleanly here - and rely on pagination (several
-// requests) rather than one very large page. Override via `opts.pageSize` if needed.
+// Blockscout page size (`offset` query param). Must be at most RESULT_WINDOW; 5000 keeps each
+// response to a few MB. Blockscout's IP rate limit ("Too many requests…") comes back as an
+// ordinary `status: "0"` JSON body, not an HTTP error.
 const DEFAULT_PAGE_SIZE = 5000
 
-// Blockscout's Etherscan-compatible `tokentx` endpoint only exposes the first
-// page * offset <= 10,000 rows of a query. Checked live 2026-09-27 (USDT vs. a Binance hot
-// wallet): page=2&offset=5000 still returned a full page, page=3&offset=5000 returned
-// `status: "0"`, "Result window is too large, PageNo x Offset size must be less than or equal
-// to 10000", `result: null`. `startblock`/`endblock` are honoured with `sort=asc` (every row
-// was inside the range, in ascending block order). So once a window is full we query again
-// from its last block: that block is dropped from the full window and fetched again whole as
-// the start of the next one, which gives no duplicate and no gap without a row identity
-// (rows have no log index). The live window ended mid-block (14 rows of its last block).
+// `tokentx` only exposes page * offset <= 10,000 rows per query; past that it answers
+// "Result window is too large" (checked live 2026-09-27, as was `startblock` with `sort=asc`).
+// A full window can end mid-block and rows have no log index, so its last block is dropped
+// and refetched whole as the start of the next window: no duplicate, no gap.
 const RESULT_WINDOW = 10_000
 
 // Safety cap on the whole history, so a huge wallet fails clearly instead of loading forever.
@@ -145,6 +133,10 @@ async function fetchAllRows(
 
   for (;;) {
     const { rows: windowRows, full } = await fetchWindow(token, wallet, fetchFn, baseUrl, pageSize, startblock)
+    // The block we start from was just seen, so an empty continuation means inconsistent data.
+    if (startblock !== '0' && windowRows.length === 0) {
+      throw new Error(`Blockscout returned no transfers from block ${startblock}, which it listed just before; try again`)
+    }
     if (!full) return rows.concat(windowRows)
 
     const lastBlock = windowRows[windowRows.length - 1].blockNumber

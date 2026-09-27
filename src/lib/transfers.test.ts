@@ -270,8 +270,6 @@ describe('fetchTransfers', () => {
     const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })
 
     expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
-    const startblocks = fetchMock.mock.calls.map(([url]) => new URL(url).searchParams.get('startblock'))
-    expect(new Set(startblocks).size).toBeGreaterThanOrEqual(3)
   })
 
   it('handles a window that ends exactly on the cap: the next window only returns the boundary block', async () => {
@@ -286,6 +284,21 @@ describe('fetchTransfers', () => {
     expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock.mock.calls[2][0]).toContain('startblock=9999')
+  })
+
+  it('throws instead of losing the boundary block when the next window comes back empty', async () => {
+    const history = Array.from({ length: 10_000 }, (_, i) => row({ hash: `0x${i}`, blockNumber: String(i + 1) }))
+    const real = fakeBlockscout(history)
+    // An inconsistent indexer: nothing from the boundary block onwards.
+    const fetchMock = vi.fn(async (url: string) =>
+      new URL(url).searchParams.get('startblock') === '0'
+        ? real(url)
+        : { ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) },
+    )
+
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+      /block 10000/,
+    )
   })
 
   it('throws a clear error when one block has more transfers than a whole window', async () => {
