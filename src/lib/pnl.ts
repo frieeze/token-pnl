@@ -140,8 +140,9 @@ export function computePnl(input: PnlInput): PnlResult {
         const available = held > deposited ? held - deposited : 0n
         if (m.amount > available) oversell = true
         const covered = m.amount > available ? available : m.amount
-        // A sell/transfer that empties the available balance removes the whole remaining
-        // cost, so cost is exactly 0 on a full exit (no float dust).
+        // Only a sell/transfer that empties the whole position (nothing deposited) removes the
+        // whole remaining cost, so cost is exactly 0 on a full exit (no float dust). Emptying just
+        // the available balance must not: deposited tokens keep their cost.
         const removedCost = covered === held ? cost : toTokens(covered) * (cost / toTokens(held))
         if (m.class === 'sell') {
           realized += usd - removedCost

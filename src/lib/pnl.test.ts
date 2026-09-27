@@ -430,6 +430,16 @@ describe('computePnl', () => {
       expect(r.totals.soldQuantity).toBe(units(5n))
     })
 
+    it('selling exactly held - deposited keeps the cost of deposited tokens', () => {
+      const movements = [mv('buy', 10n, 2), mv('deposit', 6n, null), mv('sell', 4n, 3)]
+      const r = computePnl({ decimals: DEC, movements, currentPrice: 4, onchainBalance: 0n })
+      // covered = available = 4 @ avg 2 → removedCost 8; the 6 deposited keep cost 12
+      expect(r.flags.oversell).toBe(false)
+      expect(r.totals.held).toBe(units(6n))
+      expect(r.totals.cost).toBeCloseTo(12, 9)
+      expect(r.totals.realized).toBeCloseTo(4, 9)
+    })
+
     it('transfer out beyond held - deposited also clamps and flags oversell', () => {
       const movements = [mv('buy', 10n, 2), mv('deposit', 6n, null), mv('transferOut', 5n, null)]
       const r = computePnl({ decimals: DEC, movements, currentPrice: 4, onchainBalance: units(5n) })
