@@ -1,3 +1,4 @@
+import { erc20Abi, erc20Abi_bytes32, toHex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import { balanceOf, fetchTransfers } from './transfers'
 
@@ -154,6 +155,46 @@ describe('fetchTransfers', () => {
     expect(result.decimals).toBe(6)
   })
 
+  it('reads symbol/decimals independently: a bytes32 symbol (e.g. MKR) falls back and decodes, even when decimals fails', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) })
+    const readContract = vi.fn().mockImplementation(({ abi, functionName }: { abi: unknown; functionName: string }) => {
+      if (functionName === 'decimals') return Promise.reject(new Error('decimals() reverted'))
+      if (functionName === 'symbol' && abi === erc20Abi) return Promise.reject(new Error('string decode failed'))
+      if (functionName === 'symbol' && abi === erc20Abi_bytes32) return Promise.resolve(toHex('MKR', { size: 32 }))
+      throw new Error(`unexpected call: ${functionName}`)
+    })
+
+    const result = await fetchTransfers(TOKEN, WALLET, {
+      fetch: fetchMock,
+      publicClient: { readContract } as never,
+    })
+
+    expect(result.symbol).toBe('MKR')
+    expect(result.decimals).toBeNull()
+  })
+
+  it('reads symbol/decimals independently: decimals succeeds even when both symbol lookups fail', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) })
+    const readContract = vi.fn().mockImplementation(({ abi, functionName }: { abi: unknown; functionName: string }) => {
+      if (functionName === 'decimals') return Promise.resolve(18)
+      if (functionName === 'symbol' && abi === erc20Abi) return Promise.reject(new Error('string decode failed'))
+      if (functionName === 'symbol' && abi === erc20Abi_bytes32) return Promise.reject(new Error('bytes32 also failed'))
+      throw new Error(`unexpected call: ${functionName}`)
+    })
+
+    const result = await fetchTransfers(TOKEN, WALLET, {
+      fetch: fetchMock,
+      publicClient: { readContract } as never,
+    })
+
+    expect(result.symbol).toBeNull()
+    expect(result.decimals).toBe(18)
+  })
+
   it('throws a clear error for an invalid wallet address', async () => {
     await expect(fetchTransfers(TOKEN, 'not-an-address')).rejects.toThrow(/invalid wallet/i)
   })
@@ -162,10 +203,43 @@ describe('fetchTransfers', () => {
     await expect(fetchTransfers('not-an-address', WALLET)).rejects.toThrow(/invalid token/i)
   })
 
-  it('throws on an HTTP error', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false, status: 500, statusText: 'Server Error' })
+  it('throws on an HTTP error, falling back to statusText when the body is not JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      statusText: 'Server Error',
+      json: async () => {
+        throw new SyntaxError('not json')
+      },
+    })
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(/500/)
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(/500 Server Error/)
+  })
+
+  it('throws on an HTTP error, using the JSON body message when present (e.g. a 429)', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      statusText: 'Too Many Requests',
+      json: async () => ({
+        message: 'Too many requests. Increase limits now at https://dev.blockscout.com',
+      }),
+    })
+
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(
+      /429 Too many requests\. Increase limits now at/,
+    )
+  })
+
+  it('throws once the accumulated row count reaches the 10,000-result cap', async () => {
+    const page1 = Array.from({ length: 5000 }, (_, i) => row({ hash: `0xa${i}`, blockNumber: String(i + 1) }))
+    const page2 = Array.from({ length: 5000 }, (_, i) => row({ hash: `0xb${i}`, blockNumber: String(i + 5001) }))
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse(page1)).mockResolvedValueOnce(okResponse(page2))
+
+    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock, pageSize: 5000 })).rejects.toThrow(
+      /more than 10,000 transfers/i,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('throws on a Blockscout status "0" error that is not "no transactions found"', async () => {

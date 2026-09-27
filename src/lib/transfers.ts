@@ -1,7 +1,9 @@
 import {
   createPublicClient,
   erc20Abi,
+  erc20Abi_bytes32,
   getAddress,
+  hexToString,
   http,
   isAddress,
   isAddressEqual,
@@ -67,8 +69,22 @@ const DEFAULT_BASE_URL = 'https://eth.blockscout.com/api'
 // requests) rather than one very large page. Override via `opts.pageSize` if needed.
 const DEFAULT_PAGE_SIZE = 5000
 
+// Blockscout's Etherscan-compatible `tokentx` endpoint only ever exposes the first
+// page * offset <= 10,000 rows of a result set; past that it either errors or silently
+// omits rows, so we can't tell whether we've fetched everything. We throw instead of
+// returning a truncated list. Fetching the remainder via block-range continuation
+// (`startblock`/`endblock`) is tracked in https://github.com/frieeze/token-pnl/issues/10.
+const MAX_ROWS = 10_000
+
+// Lazily-created, shared across calls that don't inject their own client, so we don't
+// spin up a new viem client (and its transport) per call.
+let sharedClient: PublicClient | undefined
+
 function defaultClient(): PublicClient {
-  return createPublicClient({ chain: mainnet, transport: http(DEFAULT_RPC_URL) })
+  if (!sharedClient) {
+    sharedClient = createPublicClient({ chain: mainnet, transport: http(DEFAULT_RPC_URL) })
+  }
+  return sharedClient
 }
 
 interface BlockscoutTx {
@@ -116,7 +132,14 @@ async function fetchAllRows(
     const url = buildUrl(baseUrl, token, wallet, page, pageSize)
     const res = await fetchFn(url)
     if (!res.ok) {
-      throw new Error(`Blockscout request failed: ${res.status} ${res.statusText}`)
+      let detail: string = res.statusText
+      try {
+        const errorBody = await res.json()
+        if (typeof errorBody?.message === 'string' && errorBody.message) detail = errorBody.message
+      } catch {
+        // body wasn't JSON: fall back to statusText, already the default
+      }
+      throw new Error(`Blockscout request failed: ${res.status} ${detail}`)
     }
 
     let body: BlockscoutResponse
@@ -133,6 +156,11 @@ async function fetchAllRows(
 
     const pageRows = Array.isArray(body.result) ? body.result : []
     rows.push(...pageRows)
+    if (rows.length >= MAX_ROWS) {
+      throw new Error(
+        'This wallet has more than 10,000 transfers of this token; Blockscout cannot list them all yet',
+      )
+    }
     if (pageRows.length < pageSize) break
     page += 1
   }
@@ -212,14 +240,37 @@ export async function fetchTransfers(
   }
 
   const client = opts.publicClient ?? defaultClient()
+  const [symbol, decimals] = await Promise.all([
+    readSymbol(client, tokenAddr),
+    readDecimals(client, tokenAddr),
+  ])
+  return { symbol, decimals, movements }
+}
+
+/**
+ * Reads `symbol()` on-chain. Most ERC-20s return a `string`, but some older tokens
+ * (e.g. MKR) return a `bytes32` instead, which reverts against the standard ABI - so we
+ * retry with the `bytes32` ABI and decode it, trimming the zero-padding.
+ */
+async function readSymbol(client: ReadContractClient, address: Address): Promise<string | null> {
   try {
-    const [symbol, decimals] = await Promise.all([
-      client.readContract({ address: tokenAddr, abi: erc20Abi, functionName: 'symbol' }),
-      client.readContract({ address: tokenAddr, abi: erc20Abi, functionName: 'decimals' }),
-    ])
-    return { symbol, decimals, movements }
+    return await client.readContract({ address, abi: erc20Abi, functionName: 'symbol' })
   } catch {
-    return { symbol: null, decimals: null, movements }
+    // fall through to the bytes32 variant below
+  }
+  try {
+    const raw = await client.readContract({ address, abi: erc20Abi_bytes32, functionName: 'symbol' })
+    return hexToString(raw, { size: 32 }).replace(/\u0000+$/, '')
+  } catch {
+    return null
+  }
+}
+
+async function readDecimals(client: ReadContractClient, address: Address): Promise<number | null> {
+  try {
+    return await client.readContract({ address, abi: erc20Abi, functionName: 'decimals' })
+  } catch {
+    return null
   }
 }
 
