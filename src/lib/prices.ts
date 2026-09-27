@@ -27,15 +27,18 @@ const CURRENT_PRICE_URL = 'https://coins.llama.fi/prices/current'
 const TIMESTAMPS_PER_CHUNK = 500
 const DEFAULT_CONCURRENCY = 4
 const RETRY_DELAY_MS = 500
+const DEFAULT_TIMEOUT_MS = 15_000
 
 export interface FetchHistoricalPricesOpts {
   fetch?: typeof fetch
   onProgress?: (done: number, total: number) => void
   concurrency?: number
+  timeoutMs?: number
 }
 
 export interface FetchCurrentPriceOpts {
   fetch?: typeof fetch
+  timeoutMs?: number
 }
 
 interface BatchHistoricalPrice {
@@ -60,6 +63,7 @@ export async function fetchHistoricalPrices(
 ): Promise<Map<number, number | null>> {
   const doFetch = opts.fetch ?? fetch
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_CONCURRENCY)
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const unique = Array.from(new Set(timestamps)).sort((a, b) => a - b)
 
   const result = new Map<number, number | null>()
@@ -74,11 +78,22 @@ export async function fetchHistoricalPrices(
 
   let done = 0
   let nextChunkIndex = 0
+  // Once a chunk has failed for good, workers stop starting new chunks.
+  // In-flight chunks are allowed to finish, but their results are discarded.
+  let failure: Error | null = null
 
   async function worker(): Promise<void> {
-    while (nextChunkIndex < chunks.length) {
+    while (nextChunkIndex < chunks.length && !failure) {
       const chunk = chunks[nextChunkIndex++]!
-      const apiPrices = await fetchBatchHistoricalChunk(token, chunk, doFetch)
+      let apiPrices: BatchHistoricalPrice[]
+      try {
+        apiPrices = await fetchBatchHistoricalChunk(token, chunk, doFetch, timeoutMs)
+      } catch (err) {
+        failure ??= err instanceof Error ? err : new Error(String(err))
+        return
+      }
+      if (failure) return
+
       for (const [ts, price] of matchClosestPrices(chunk, apiPrices)) {
         result.set(ts, price)
       }
@@ -89,6 +104,8 @@ export async function fetchHistoricalPrices(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker))
 
+  if (failure) throw failure
+
   return result
 }
 
@@ -98,28 +115,41 @@ export async function fetchCurrentPrice(
   opts: FetchCurrentPriceOpts = {},
 ): Promise<number | null> {
   const doFetch = opts.fetch ?? fetch
-  const coinKey = `ethereum:${token}`
-  const url = `${CURRENT_PRICE_URL}/${coinKey}`
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const key = coinKey(token)
+  const url = `${CURRENT_PRICE_URL}/${key}`
 
-  const res = await fetchWithRetry(url, doFetch)
+  const res = await fetchWithRetry(url, doFetch, timeoutMs)
   const data = (await res.json()) as { coins?: Record<string, { price: number }> }
-  return data.coins?.[coinKey]?.price ?? null
+  return data.coins?.[key]?.price ?? null
+}
+
+/** Builds the `chain:address` key DefiLlama's coins API expects (Ethereum only). */
+function coinKey(token: `0x${string}`): string {
+  return `ethereum:${token}`
 }
 
 async function fetchBatchHistoricalChunk(
   token: `0x${string}`,
   chunk: number[],
   doFetch: typeof fetch,
+  timeoutMs: number,
 ): Promise<BatchHistoricalPrice[]> {
-  const coinKey = `ethereum:${token}`
-  const coins = JSON.stringify({ [coinKey]: chunk })
+  const key = coinKey(token)
+  const coins = JSON.stringify({ [key]: chunk })
   const url = `${BATCH_HISTORICAL_URL}?coins=${encodeURIComponent(coins)}`
 
-  const res = await fetchWithRetry(url, doFetch)
+  const res = await fetchWithRetry(url, doFetch, timeoutMs)
   const data = (await res.json()) as {
     coins?: Record<string, { prices?: BatchHistoricalPrice[] }>
   }
-  return data.coins?.[coinKey]?.prices ?? []
+  const prices = data.coins?.[key]?.prices ?? []
+  if (prices.length > chunk.length) {
+    throw new Error(
+      `DefiLlama returned ${prices.length} prices for a chunk of ${chunk.length} requested timestamps (${url})`,
+    )
+  }
+  return prices
 }
 
 /**
@@ -163,14 +193,43 @@ function matchClosestPrices(
   return pairs
 }
 
-async function fetchWithRetry(url: string, doFetch: typeof fetch): Promise<Response> {
-  const res = await doFetch(url)
+/** A failure worth retrying once: a 429/5xx response, a timeout, or a network error. */
+class RetryableFetchError extends Error {}
+
+async function fetchWithRetry(
+  url: string,
+  doFetch: typeof fetch,
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    return await attemptFetch(url, doFetch, timeoutMs)
+  } catch (err) {
+    if (!(err instanceof RetryableFetchError)) throw err
+    await sleep(RETRY_DELAY_MS)
+    try {
+      return await attemptFetch(url, doFetch, timeoutMs)
+    } catch (retryErr) {
+      const reason = retryErr instanceof RetryableFetchError ? retryErr.message : String(retryErr)
+      throw new Error(`DefiLlama request failed after retry: ${reason} (${url})`)
+    }
+  }
+}
+
+async function attemptFetch(
+  url: string,
+  doFetch: typeof fetch,
+  timeoutMs: number,
+): Promise<Response> {
+  let res: Response
+  try {
+    res = await doFetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  } catch (err) {
+    const name = err instanceof Error ? err.name : 'unknown error'
+    throw new RetryableFetchError(`network error or timeout (${name})`)
+  }
   if (res.ok) return res
   if (res.status === 429 || res.status >= 500) {
-    await sleep(RETRY_DELAY_MS)
-    const retryRes = await doFetch(url)
-    if (retryRes.ok) return retryRes
-    throw new Error(`DefiLlama request failed after retry: ${retryRes.status} ${url}`)
+    throw new RetryableFetchError(`HTTP ${res.status}`)
   }
   throw new Error(`DefiLlama request failed: ${res.status} ${url}`)
 }
