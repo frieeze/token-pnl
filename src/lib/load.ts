@@ -2,7 +2,7 @@
 // Fetchers are injectable so this is unit-testable without the network.
 
 import { getAddress } from 'viem'
-import { computePnl, type PnlResult } from './pnl'
+import { computePnl, validPrice, type PnlResult } from './pnl'
 import { fetchCurrentPrice, fetchHistoricalPrices } from './prices'
 import { balanceOf, fetchTransfers } from './transfers'
 
@@ -42,10 +42,12 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   if (movements.length === 0) return { symbol, decimals, pnl: null, currentPrice: null, onchainBalance, heldUsd: null }
 
   const tokenAddr = getAddress(token)
-  const [prices, currentPrice] = await Promise.all([
+  const [prices, rawCurrentPrice] = await Promise.all([
     f.fetchHistoricalPrices(tokenAddr, movements.map((m) => m.timestamp), { onProgress: opts.onProgress }),
     f.fetchCurrentPrice(tokenAddr),
   ])
+  // Clean once so the page never shows a bad value that the PnL treats as missing.
+  const currentPrice = validPrice(rawCurrentPrice)
 
   const pnl = computePnl({
     decimals,

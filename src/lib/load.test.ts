@@ -69,6 +69,12 @@ describe('loadPnl', () => {
     expect(res.pnl?.totals.total).toBeNull()
   })
 
+  it('treats a bad current price as missing', async () => {
+    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes({ fetchCurrentPrice: vi.fn(async () => -1) }) })
+    expect(res.currentPrice).toBeNull()
+    expect(res.heldUsd).toBeNull()
+  })
+
   it('flags a mismatch with the on-chain balance', async () => {
     const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes({ balanceOf: vi.fn(async () => 5n) }) })
     expect(res.pnl?.flags.balanceMismatch).toBe(true)

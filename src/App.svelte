@@ -26,7 +26,14 @@
       : !isAddress(wallet)
         ? 'Invalid wallet address: expected 0x followed by 40 hex characters (with a valid checksum if mixed-case).'
         : ''
-    if (invalid) return
+    if (invalid) {
+      // Drop any run still in progress so its result can't land behind this message.
+      runId++
+      loading = false
+      result = null
+      error = ''
+      return
+    }
 
     history.replaceState(null, '', `?${new URLSearchParams({ token, wallet })}`)
     const id = ++runId
