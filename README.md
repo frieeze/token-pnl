@@ -24,3 +24,11 @@ npm run build  # produce a production build in dist/
 npm test       # run the unit tests (Vitest)
 npm run check  # type-check the app (svelte-check)
 ```
+
+Unit tests mock the network. `src/lib/transfers.test.ts` also has one opt-in live test that
+hits the real Blockscout API and a public Ethereum RPC; it's skipped by default and only runs
+with:
+
+```sh
+LIVE=1 npm test
+```
