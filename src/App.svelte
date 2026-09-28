@@ -1,14 +1,14 @@
 <script lang="ts">
   import { isAddress } from 'viem'
   import { errorMessage, formatAmount, formatDate, formatUsd } from './lib/format'
-  import { loadPnl, type LoadResult } from './lib/load'
+  import { loadPnl, type LoadResult, type LoadStep } from './lib/load'
 
   const params = new URLSearchParams(location.search)
   let token = $state(params.get('token') ?? '')
   let wallet = $state(params.get('wallet') ?? '')
   let invalid = $state('')
   let loading = $state(false)
-  let progress = $state<{ done: number; total: number; step: 'classify' | 'price' } | null>(null)
+  let progress = $state<{ done: number; total: number; step: LoadStep } | null>(null)
   let error = $state('')
   let result = $state.raw<LoadResult | null>(null)
   // Ignores the answer of an older run if the user submitted again meanwhile.

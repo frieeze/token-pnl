@@ -28,7 +28,8 @@ const wethWithdrawal = {
 const nftTransfer = {
   address: OTHER_TOKEN.toLowerCase() as Address,
   topics: encodeEventTopics({ abi: erc721Abi, eventName: 'Transfer', args: { from: WALLET, to: POOL, tokenId: 1n } }) as Hash[],
-  data: '0x' as Hash,
+  // Non-zero data, so only the topic count can exclude it (real ERC-721 logs have empty data).
+  data: numberToHex(1n, { size: 32 }),
 }
 
 type Mv = Pick<Movement, 'hash' | 'direction' | 'counterparty' | 'amount'>
@@ -47,12 +48,13 @@ describe('applyRules', () => {
     ['3: in, another token out → buy', mv('in'), tx({ logs: [transfer(OTHER_TOKEN, WALLET, POOL), transfer(TOKEN, POOL, WALLET)] }), 'buy'],
     ['4: out, ETH in (WETH unwrapped) → sell', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, POOL), wethWithdrawal] }), 'sell'],
     ['4: out, another token in → sell', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, POOL), transfer(OTHER_TOKEN, POOL, WALLET)] }), 'sell'],
+    ['3 before 5: in, minted while ETH goes out (paid mint) → buy', mv('in', zeroAddress), tx({ from: WALLET, value: 1n, logs: [transfer(TOKEN, zeroAddress, WALLET)] }), 'buy'],
     ['5: in, minted, no other leg → reward', mv('in', zeroAddress), tx({ logs: [transfer(TOKEN, zeroAddress, WALLET)] }), 'reward'],
     ['6: out to a contract, no other leg → deposit', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, POOL)] }), 'deposit'],
     ['8: in from a contract, no deposit out → reward', mv('in'), tx({ from: WALLET, logs: [transfer(TOKEN, POOL, WALLET)] }), 'reward'],
     ['9: out to a wallet (EOA) → transfer out', mv('out', PEER), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, PEER)] }), 'transferOut'],
     ['10: in from a wallet (EOA) → transfer in', mv('in', PEER), tx({ logs: [transfer(TOKEN, PEER, WALLET)] }), 'transferIn'],
-    ['known gap: out, native ETH received without WETH → deposit', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, POOL)] }), 'deposit'],
+    // Known gap: a sell paid in native ETH without WETH looks exactly like rule 6 (deposit).
   ] as const)('rule %s', (_name, m, t, expected) => {
     expect(classifyOne(m, t)).toBe(expected)
   })
@@ -87,6 +89,14 @@ describe('applyRules', () => {
     const classes = applyRules({ token: TOKEN, wallet: WALLET, movements, txs, contracts: new Set([POOL, VAULT]) })
     expect(classes).toEqual(['reward', 'deposit', 'reward', 'withdraw', 'withdraw', 'reward'])
   })
+
+  it('rule 7: a withdrawal above the amount out empties it, so the next in is a reward', () => {
+    const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
+    const movements = [mv('out', POOL, h(1), 100n), mv('in', POOL, h(2), 120n), mv('in', POOL, h(3), 10n)]
+    const txs = new Map(movements.map((m) => [m.hash, tx()]))
+    const classes = applyRules({ token: TOKEN, wallet: WALLET, movements, txs, contracts: new Set([POOL]) })
+    expect(classes).toEqual(['deposit', 'withdraw', 'reward'])
+  })
 })
 
 describe('classifyMovements', () => {
@@ -100,7 +110,7 @@ describe('classifyMovements', () => {
     return {
       getTransaction: vi.fn(async ({ hash }: { hash: Hash }) => ({ from: txs[hash]!.from, value: txs[hash]!.value })),
       getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hash }) => ({ logs: txs[hash]!.logs })),
-      getCode: vi.fn(async ({ address }: { address: Address }) => (contracts.includes(address) ? '0x6080' : undefined)),
+      getCode: vi.fn(async ({ address }: { address: Address }) => (contracts.includes(address) ? ('0x6080' as Hash) : undefined)),
     }
   }
 
@@ -127,6 +137,21 @@ describe('classifyMovements', () => {
 
     expect(classes).toEqual(['buy', 'reward', 'deposit', 'transferIn', 'withdraw'])
     expect(client.getCode.mock.calls.map(([a]) => a.address).sort()).toEqual([POOL, PEER])
+  })
+
+  it('treats an EOA with an EIP-7702 delegation as a wallet', async () => {
+    const client = stubClient({ [h(1)]: tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, PEER)] }) }, [])
+    client.getCode.mockResolvedValue(`0xef0100${POOL.slice(2).toLowerCase()}`)
+    expect(await classifyMovements(TOKEN, WALLET, [movement(1, 'out', PEER)], { publicClient: client })).toEqual(['transferOut'])
+  })
+
+  it('fetches transactions 50 at a time (one JSON-RPC batch per chunk)', async () => {
+    const t = tx({ logs: [transfer(TOKEN, PEER, WALLET)] })
+    const movements = Array.from({ length: 51 }, (_, i) => movement(i + 1, 'in', PEER))
+    const client = stubClient(Object.fromEntries(movements.map((m) => [m.hash, t])), [])
+    const onProgress = vi.fn()
+    await classifyMovements(TOKEN, WALLET, movements, { publicClient: client, onProgress })
+    expect(onProgress.mock.calls).toEqual([[0, 51], [50, 51], [51, 51]])
   })
 
   it('fails with a clear message when an RPC call fails', async () => {

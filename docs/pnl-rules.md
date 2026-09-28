@@ -41,12 +41,20 @@ Rules, first match wins:
 | 9 | out | to a wallet (EOA) | transfer out |
 | 10 | in | from a wallet (EOA) | transfer in |
 
-A contract is an address with code (`eth_getCode`) at the latest block.
+A contract is an address with code (`eth_getCode`) at the latest block. An EOA with an EIP-7702 delegation
+(code `0xef0100…`) still counts as a wallet.
 The user can override the class of any row with any class of the same direction (in: buy, withdraw, reward,
 transfer in; out: sell, deposit, transfer out).
 
-Known gap: a sell paid in native ETH with no WETH involved (e.g. Uniswap v4 native pools) has no visible ETH leg
-and falls to deposit. The override fixes it.
+Known gaps (the override fixes them):
+
+- A sell paid in native ETH with no WETH involved (e.g. Uniswap v4 native pools) has no visible ETH leg
+  and falls to deposit.
+- ETH legs are only seen in txs the wallet sent. A smart wallet (Safe, ERC-4337) or an intent-based trade sent by
+  a solver (CoW, UniswapX) has no visible ETH leg: a buy with ETH falls to reward (or withdraw), a sell for ETH
+  to deposit.
+- Rule 7 counts deposits per contract. Tokens that come back from a different contract than the one they went to
+  (e.g. a staking escrow or a withdrawal queue) fall to reward, and the deposit stays counted as out.
 
 ## Prices
 

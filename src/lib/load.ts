@@ -15,9 +15,12 @@ export interface Fetchers {
   fetchCurrentPrice: typeof fetchCurrentPrice
 }
 
+/** Which part of the load `onProgress` reports on. */
+export type LoadStep = 'classify' | 'price'
+
 export interface LoadOptions {
   /** `classify`: transactions fetched; `price`: timestamps priced. */
-  onProgress?: (done: number, total: number, step: 'classify' | 'price') => void
+  onProgress?: (done: number, total: number, step: LoadStep) => void
   fetchers?: Fetchers
 }
 

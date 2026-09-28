@@ -151,7 +151,9 @@ export async function classifyMovements(
     ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallet)).map((m) => m.counterparty)),
   ]
   const codes = await rpc(inChunks(toCheck, CODES_PER_CHUNK, (address) => client.getCode({ address })))
-  const contracts = new Set(toCheck.filter((_, i) => codes[i] !== undefined && codes[i] !== '0x'))
+  // An EOA with an EIP-7702 delegation has code `0xef0100‖address`: still a wallet, not a contract.
+  const isContract = (code: Hash | undefined) => code !== undefined && code !== '0x' && !code.startsWith('0xef0100')
+  const contracts = new Set(toCheck.filter((_, i) => isContract(codes[i])))
 
   return applyRules({ token, wallet, movements, txs, contracts })
 }
