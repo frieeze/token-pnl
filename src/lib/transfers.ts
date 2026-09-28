@@ -148,13 +148,13 @@ async function fetchAllRows(
     const kept = windowRows.filter((r) => r.blockNumber !== lastBlock)
     if (kept.length === 0) {
       throw new Error(
-        `This wallet has at least ${windowRows.length.toLocaleString('en-US')} transfers of this token in block ${lastBlock}; Blockscout cannot list them all`,
+        `Wallet ${wallet} has at least ${windowRows.length.toLocaleString('en-US')} transfers of this token in block ${lastBlock}; Blockscout cannot list them all`,
       )
     }
     rows.push(...kept)
     if (rows.length > MAX_ROWS) {
       throw new Error(
-        `This wallet has more than ${MAX_ROWS.toLocaleString('en-US')} transfers of this token; too many to load`,
+        `Wallet ${wallet} has more than ${MAX_ROWS.toLocaleString('en-US')} transfers of this token; too many to load`,
       )
     }
     startblock = lastBlock
@@ -261,12 +261,12 @@ export async function fetchTransfers(
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
   const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE
 
-  const rows: BlockscoutTx[] = []
+  let first: BlockscoutTx | undefined
   const movements: Movement[] = []
   // One wallet at a time: parallel requests would trip Blockscout's IP rate limit sooner.
   for (const wallet of walletAddrs) {
     const walletRows = await fetchAllRows(tokenAddr, wallet, fetchFn, baseUrl, pageSize)
-    rows.push(...walletRows)
+    first ??= walletRows[0]
     for (const row of walletRows) {
       const m = toMovement(row, wallet, walletAddrs)
       if (m) movements.push(m)
@@ -280,8 +280,7 @@ export async function fetchTransfers(
     return a.transactionIndex - b.transactionIndex
   })
 
-  if (rows.length > 0) {
-    const [first] = rows
+  if (first) {
     return {
       symbol: first.tokenSymbol ?? null,
       decimals: first.tokenDecimal !== undefined ? Number(first.tokenDecimal) : null,

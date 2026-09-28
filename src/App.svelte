@@ -89,7 +89,7 @@
     }
   }
 
-  if (params.get('token') && params.has('wallet')) submit(undefined, { keepOverrides: true })
+  if (params.get('token') && params.getAll('wallet').some(Boolean)) submit(undefined, { keepOverrides: true })
 </script>
 
 <main>

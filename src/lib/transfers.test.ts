@@ -1,4 +1,4 @@
-import { erc20Abi, erc20Abi_bytes32, toHex } from 'viem'
+import { erc20Abi, erc20Abi_bytes32, getAddress, toHex } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import { balanceOf, fetchTransfers } from './transfers'
 
@@ -309,7 +309,7 @@ describe('fetchTransfers', () => {
     const fetchMock = fakeBlockscout(history)
 
     await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
-      /at least 10,000 transfers of this token in block 42/i,
+      `Wallet ${getAddress(WALLET)} has at least 10,000 transfers of this token in block 42`,
     )
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
@@ -325,7 +325,7 @@ describe('fetchTransfers', () => {
     })
 
     await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
-      /more than 200,000 transfers/i,
+      `Wallet ${getAddress(WALLET)} has more than 200,000 transfers`,
     )
   })
 

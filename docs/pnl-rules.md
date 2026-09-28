@@ -63,6 +63,9 @@ Known gaps (the override fixes them):
   to deposit.
 - Rule 7 counts deposits per contract. Tokens that come back from a different contract than the one they went to
   (e.g. a staking escrow or a withdrawal queue) fall to reward, and the deposit stays counted as out.
+- Within one tx, the movements of different wallets are taken in the order the wallets were given, not the real log
+  order. If one wallet sends tokens out before another receives them in the same tx, the result can show an oversell
+  that did not happen (flagged incomplete).
 
 ## Prices
 

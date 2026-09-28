@@ -43,7 +43,7 @@ export interface LoadResult {
 
 const defaultFetchers: Fetchers = { fetchTransfers, classifyMovements, balanceOf, fetchHistoricalPrices, fetchCurrentPrice }
 
-/** One PnL over all of `wallets` (D15). */
+/** One PnL over all of `wallets` (D15). They must be distinct: a repeated wallet is counted twice. */
 export async function loadPnl(token: string, wallets: readonly string[], opts: LoadOptions = {}): Promise<LoadResult> {
   const f = opts.fetchers ?? defaultFetchers
   const [{ symbol, decimals, movements }, balances] = await Promise.all([

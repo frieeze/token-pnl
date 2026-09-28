@@ -119,6 +119,11 @@ describe('applyRules with several wallets', () => {
     expect(classifyOf(mv('in', PEER), t)).toBe('transferIn')
   })
 
+  it('does not count a transfer of another token from a wallet to itself as a leg (one wallet)', () => {
+    const t = tx({ logs: [transfer(OTHER_TOKEN, WALLET, WALLET), transfer(TOKEN, PEER, WALLET)] })
+    expect(classifyOne(mv('in', PEER), t)).toBe('transferIn')
+  })
+
   it('rule 7: counts deposits per contract across all the wallets', () => {
     const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
     const movements = [mv('out', POOL, h(1), 100n), mv('in', POOL, h(2), 100n)] // A deposits, B withdraws
