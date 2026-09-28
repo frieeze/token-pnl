@@ -3,8 +3,11 @@ import {
   allowedClasses,
   applyOverrides,
   keyOf,
+  keysOf,
   parseOverridesParam,
   serializeOverridesParam,
+  withOverride,
+  withOverridesParam,
   type Overrides,
 } from './overrides'
 import type { MovementClass } from './pnl'
@@ -51,6 +54,49 @@ describe('parseOverridesParam / serializeOverridesParam', () => {
     // missing class, unknown class, missing index, garbage entry
     const raw = [`${HASH_A}:0:`, `${HASH_A}:1:notaclass`, `${HASH_A}:x:buy`, 'garbage', `${HASH_B}:0:sell`].join(',')
     expect(parseOverridesParam(raw)).toEqual(new Map([[keyOf(HASH_B, 0), 'sell']]))
+  })
+})
+
+describe('keysOf', () => {
+  it('indexes each movement among the movements of its own tx', () => {
+    expect(keysOf([{ hash: HASH_A }, { hash: HASH_B }, { hash: HASH_A }])).toEqual([
+      keyOf(HASH_A, 0),
+      keyOf(HASH_B, 0),
+      keyOf(HASH_A, 1),
+    ])
+  })
+})
+
+describe('withOverride', () => {
+  const key = keyOf(HASH_A, 0)
+
+  it('sets the override without touching the original map', () => {
+    const before: Overrides = new Map()
+    expect(withOverride(before, key, 'withdraw', 'buy')).toEqual(new Map([[key, 'withdraw']]))
+    expect(before.size).toBe(0)
+  })
+
+  it('drops the override when the original class is chosen again', () => {
+    expect(withOverride(new Map([[key, 'withdraw']]), key, 'buy', 'buy')).toEqual(new Map())
+  })
+})
+
+describe('withOverridesParam', () => {
+  it('sets the param and keeps the others', () => {
+    const search = withOverridesParam('?token=t&wallet=w', new Map([[keyOf(HASH_A, 0), 'reward']]))
+    expect(search.get('token')).toBe('t')
+    expect(search.get('wallet')).toBe('w')
+    expect(parseOverridesParam(search.get('overrides'))).toEqual(new Map([[keyOf(HASH_A, 0), 'reward']]))
+  })
+
+  it('removes the param when there are no overrides', () => {
+    expect(withOverridesParam(`?token=t&overrides=${HASH_A}:0:buy`, new Map()).has('overrides')).toBe(false)
+  })
+})
+
+describe('parseOverridesParam hash case', () => {
+  it('lowercases hashes so a hand-edited link matches Blockscout hashes', () => {
+    expect(parseOverridesParam(`0x${'A'.repeat(64)}:0:buy`)).toEqual(new Map([[keyOf(HASH_A, 0), 'buy']]))
   })
 })
 

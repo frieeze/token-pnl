@@ -2,7 +2,7 @@
   import { isAddress } from 'viem'
   import { errorMessage, formatAmount, formatDate, formatUsd } from './lib/format'
   import { loadPnl, type LoadResult, type LoadStep } from './lib/load'
-  import { allowedClasses, applyOverrides, keyOf, parseOverridesParam, serializeOverridesParam, type Overrides } from './lib/overrides'
+  import { allowedClasses, applyOverrides, keysOf, parseOverridesParam, withOverride, withOverridesParam, type Overrides } from './lib/overrides'
   import { computePnl, type MovementClass } from './lib/pnl'
 
   const params = new URLSearchParams(location.search)
@@ -20,53 +20,27 @@
   const sign = (n: number | null) => (n === null || n === 0 ? '' : n > 0 ? 'pos' : 'neg')
   const shortHash = (h: string) => `${h.slice(0, 8)}…${h.slice(-6)}`
 
-  // Keys movements by tx hash + index among this token's movements in that tx (same scheme as `keyOf`/`applyOverrides`).
-  const movementKeys = $derived.by(() => {
-    const seen = new Map<string, number>()
-    return (result?.movements ?? []).map((m) => {
-      const index = seen.get(m.hash) ?? 0
-      seen.set(m.hash, index + 1)
-      return keyOf(m.hash, index)
-    })
-  })
+  const movementKeys = $derived(keysOf(result?.movements ?? []))
+  const classes = $derived(applyOverrides(result?.movements ?? [], overrides))
 
   // Recomputes the PnL locally from the already-loaded movements: no refetch.
   const pnl = $derived.by(() => {
     if (!result?.pnl) return result?.pnl ?? null
-    const classes = applyOverrides(result.movements, overrides)
-    const overridden = result.movements.map((m, i) => ({ ...m, class: classes[i]! }))
     return computePnl({
       decimals: result.decimals,
-      movements: overridden,
+      movements: result.movements.map((m, i) => ({ ...m, class: classes[i]! })),
       currentPrice: result.currentPrice,
       onchainBalance: result.onchainBalance,
     })
   })
 
-  // Keys with a valid, applied override (stale/wrong-direction overrides are ignored, not marked).
-  const appliedOverrideKeys = $derived.by(() => {
-    const applied = new Set<string>()
-    for (const [i, m] of (result?.movements ?? []).entries()) {
-      const key = movementKeys[i]!
-      const override = overrides.get(key)
-      if (override && allowedClasses(m.class).includes(override)) applied.add(key)
-    }
-    return applied
-  })
-
-  function setOverridesParam(next: Overrides) {
+  function setOverrides(next: Overrides) {
     overrides = next
-    const search = new URLSearchParams(location.search)
-    const serialized = serializeOverridesParam(next)
-    if (serialized) search.set('overrides', serialized)
-    else search.delete('overrides')
-    history.replaceState(null, '', `?${search}`)
+    history.replaceState(null, '', `?${withOverridesParam(location.search, next)}`)
   }
 
-  function changeClass(key: string, cls: MovementClass) {
-    const next = new Map(overrides)
-    next.set(key, cls)
-    setOverridesParam(next)
+  function changeClass(i: number, cls: MovementClass) {
+    setOverrides(withOverride(overrides, movementKeys[i]!, cls, result!.movements[i]!.class))
   }
 
   // `keepOverrides`: the initial load from a shared URL keeps its overrides; a fresh manual
@@ -90,10 +64,7 @@
     }
 
     if (!keepOverrides) overrides = new Map()
-    const search = new URLSearchParams({ token, wallet })
-    const serialized = serializeOverridesParam(overrides)
-    if (serialized) search.set('overrides', serialized)
-    history.replaceState(null, '', `?${search}`)
+    history.replaceState(null, '', `?${withOverridesParam(new URLSearchParams({ token, wallet }), overrides)}`)
     const id = ++runId
     loading = true
     progress = null
@@ -221,13 +192,13 @@
                 <select
                   value={row.class}
                   aria-label="Class"
-                  onchange={(e) => changeClass(movementKeys[i]!, e.currentTarget.value as MovementClass)}
+                  onchange={(e) => changeClass(i, e.currentTarget.value as MovementClass)}
                 >
                   {#each allowedClasses(row.class) as c}
                     <option value={c}>{c}</option>
                   {/each}
                 </select>
-                {#if appliedOverrideKeys.has(movementKeys[i]!)}
+                {#if classes[i] !== result.movements[i]!.class}
                   <span class="override-mark" title="Manually overridden">*</span>
                 {/if}
               </td>
