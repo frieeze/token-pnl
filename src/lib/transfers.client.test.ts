@@ -29,8 +29,8 @@ describe('default viem client', () => {
     const fetchMock1 = vi.fn().mockResolvedValueOnce(noTransfersResponse())
     const fetchMock2 = vi.fn().mockResolvedValueOnce(noTransfersResponse())
 
-    await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock1 })
-    await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock2 })
+    await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock1 })
+    await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock2 })
 
     expect(createPublicClient).toHaveBeenCalledTimes(1)
   })

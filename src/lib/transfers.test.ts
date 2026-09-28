@@ -67,7 +67,7 @@ describe('fetchTransfers', () => {
   it('normalizes a single incoming transfer as in, from its sender', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row()]))
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.symbol).toBe('USDC')
     expect(result.decimals).toBe(6)
@@ -78,6 +78,7 @@ describe('fetchTransfers', () => {
         transactionIndex: 1,
         timestamp: 1700000000,
         direction: 'in',
+        wallet: WALLET,
         counterparty: OTHER,
         amount: 1000000n,
       },
@@ -89,7 +90,7 @@ describe('fetchTransfers', () => {
       .fn()
       .mockResolvedValueOnce(okResponse([row({ from: WALLET, to: OTHER, value: '5000000' })]))
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements).toHaveLength(1)
     expect(result.movements[0].direction).toBe('out')
@@ -102,7 +103,7 @@ describe('fetchTransfers', () => {
       .fn()
       .mockResolvedValueOnce(okResponse([row({ from: WALLET, to: WALLET })]))
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements).toEqual([])
   })
@@ -112,7 +113,7 @@ describe('fetchTransfers', () => {
       okResponse([row({ to: WALLET.toLowerCase(), from: OTHER.toUpperCase().replace('0X', '0x') })])
     )
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements).toHaveLength(1)
     expect(result.movements[0].direction).toBe('in')
@@ -128,7 +129,7 @@ describe('fetchTransfers', () => {
       ])
     )
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements.map((m) => m.hash)).toEqual(['0x00', '0x02', '0x01', '0x03'])
   })
@@ -143,7 +144,7 @@ describe('fetchTransfers', () => {
       .mockResolvedValueOnce(okResponse(page1))
       .mockResolvedValueOnce(okResponse(page2))
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock, pageSize: 2 })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, pageSize: 2 })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(result.movements).toHaveLength(3)
@@ -160,7 +161,7 @@ describe('fetchTransfers', () => {
       .mockResolvedValueOnce(okResponse(page1))
       .mockResolvedValueOnce({ ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) })
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock, pageSize: 2 })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, pageSize: 2 })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(result.movements).toHaveLength(2)
@@ -176,7 +177,7 @@ describe('fetchTransfers', () => {
       throw new Error(`unexpected call: ${functionName}`)
     })
 
-    const result = await fetchTransfers(TOKEN, WALLET, {
+    const result = await fetchTransfers(TOKEN, [WALLET], {
       fetch: fetchMock,
       publicClient: { readContract } as never,
     })
@@ -197,7 +198,7 @@ describe('fetchTransfers', () => {
       throw new Error(`unexpected call: ${functionName}`)
     })
 
-    const result = await fetchTransfers(TOKEN, WALLET, {
+    const result = await fetchTransfers(TOKEN, [WALLET], {
       fetch: fetchMock,
       publicClient: { readContract } as never,
     })
@@ -217,7 +218,7 @@ describe('fetchTransfers', () => {
       throw new Error(`unexpected call: ${functionName}`)
     })
 
-    const result = await fetchTransfers(TOKEN, WALLET, {
+    const result = await fetchTransfers(TOKEN, [WALLET], {
       fetch: fetchMock,
       publicClient: { readContract } as never,
     })
@@ -227,11 +228,11 @@ describe('fetchTransfers', () => {
   })
 
   it('throws a clear error for an invalid wallet address', async () => {
-    await expect(fetchTransfers(TOKEN, 'not-an-address')).rejects.toThrow(/invalid wallet/i)
+    await expect(fetchTransfers(TOKEN, ['not-an-address'])).rejects.toThrow(/invalid wallet/i)
   })
 
   it('throws a clear error for an invalid token address', async () => {
-    await expect(fetchTransfers('not-an-address', WALLET)).rejects.toThrow(/invalid token/i)
+    await expect(fetchTransfers('not-an-address', [WALLET])).rejects.toThrow(/invalid token/i)
   })
 
   it('throws on an HTTP error, falling back to statusText when the body is not JSON', async () => {
@@ -244,7 +245,7 @@ describe('fetchTransfers', () => {
       },
     })
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(/500 Server Error/)
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })).rejects.toThrow(/500 Server Error/)
   })
 
   it('throws on an HTTP error, using the JSON body message when present (e.g. a 429)', async () => {
@@ -257,7 +258,7 @@ describe('fetchTransfers', () => {
       }),
     })
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })).rejects.toThrow(
       /429 Too many requests\. Increase limits now at/,
     )
   })
@@ -269,7 +270,7 @@ describe('fetchTransfers', () => {
     )
     const fetchMock = fakeBlockscout(history)
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })
 
     expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
   })
@@ -281,7 +282,7 @@ describe('fetchTransfers', () => {
     )
     const fetchMock = fakeBlockscout(history)
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })
 
     expect(result.movements.map((m) => m.hash)).toEqual(history.map((r) => r.hash))
     expect(fetchMock).toHaveBeenCalledTimes(3)
@@ -298,7 +299,7 @@ describe('fetchTransfers', () => {
         : { ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) },
     )
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
       /block 10000/,
     )
   })
@@ -307,7 +308,7 @@ describe('fetchTransfers', () => {
     const history = Array.from({ length: 10_001 }, (_, i) => row({ hash: `0x${i}`, blockNumber: '42' }))
     const fetchMock = fakeBlockscout(history)
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
       /at least 10,000 transfers of this token in block 42/i,
     )
     expect(fetchMock).toHaveBeenCalledTimes(2)
@@ -323,7 +324,7 @@ describe('fetchTransfers', () => {
       )
     })
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, pageSize: 5000 })).rejects.toThrow(
       /more than 200,000 transfers/i,
     )
   })
@@ -333,7 +334,56 @@ describe('fetchTransfers', () => {
       .fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ status: '0', message: 'Error! Invalid address format', result: [] }) })
 
-    await expect(fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })).rejects.toThrow(/invalid address format/i)
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })).rejects.toThrow(/invalid address format/i)
+  })
+
+  describe('with several wallets', () => {
+    /** One fake Blockscout per wallet: answers with that wallet's rows. */
+    function perWallet(rows: Record<string, ReturnType<typeof row>[]>) {
+      return vi.fn(async (url: string) => {
+        const address = new URL(url).searchParams.get('address')!
+        const found = Object.entries(rows).find(([w]) => w.toLowerCase() === address.toLowerCase())?.[1] ?? []
+        return found.length
+          ? okResponse(found)
+          : { ok: true, json: async () => ({ status: '0', message: 'No transactions found', result: [] }) }
+      })
+    }
+
+    it('merges the movements of each wallet in chain order, recording each one\'s wallet', async () => {
+      const fetchMock = perWallet({
+        [WALLET]: [row({ hash: '0x01', blockNumber: '100' }), row({ hash: '0x03', blockNumber: '300' })],
+        [THIRD]: [row({ hash: '0x02', blockNumber: '200', to: THIRD })],
+      })
+
+      const result = await fetchTransfers(TOKEN, [WALLET, THIRD], { fetch: fetchMock as never })
+
+      expect(result.movements.map((m) => [m.hash, m.wallet])).toEqual([
+        ['0x01', WALLET],
+        ['0x02', THIRD],
+        ['0x03', WALLET],
+      ])
+    })
+
+    it('takes the wallets in the order given within one tx', async () => {
+      const fetchMock = perWallet({
+        [WALLET]: [row({ hash: '0x01', from: WALLET, to: OTHER })],
+        [THIRD]: [row({ hash: '0x01', from: OTHER, to: THIRD })],
+      })
+
+      const result = await fetchTransfers(TOKEN, [THIRD, WALLET], { fetch: fetchMock as never })
+
+      expect(result.movements.map((m) => m.wallet)).toEqual([THIRD, WALLET])
+    })
+
+    it('drops a transfer between two of the wallets, listed under both', async () => {
+      const between = row({ hash: '0x01', from: WALLET, to: THIRD })
+      const fetchMock = perWallet({ [WALLET]: [between], [THIRD]: [between] })
+
+      const result = await fetchTransfers(TOKEN, [WALLET, THIRD], { fetch: fetchMock as never })
+
+      expect(result.movements).toEqual([])
+      expect(result.symbol).toBe('USDC')
+    })
   })
 
   it('ignores a row where neither side is the wallet (defensive)', async () => {
@@ -341,7 +391,7 @@ describe('fetchTransfers', () => {
       .fn()
       .mockResolvedValueOnce(okResponse([row({ from: OTHER, to: THIRD })]))
 
-    const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements).toEqual([])
   })
@@ -373,7 +423,7 @@ describe.skipIf(!process.env.LIVE)('live Blockscout + RPC (opt-in, run with LIVE
     const liveToken = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48' // USDC
     const liveWallet = '0xF977814e90dA44bFA03b6295A0616a897441aceC' // Binance 8
 
-    const result = await fetchTransfers(liveToken, liveWallet)
+    const result = await fetchTransfers(liveToken, [liveWallet])
     expect(result.symbol).toBe('USDC')
     expect(result.decimals).toBe(6)
     expect(result.movements.length).toBeGreaterThan(0)

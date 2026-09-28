@@ -8,8 +8,8 @@ const WALLET = '0xF977814e90dA44bFA03b6295A0616a897441aceC'
 
 const PEER = '0x2222222222222222222222222222222222222222'
 
-function mv(direction: Movement['direction'], amount: bigint, timestamp: number): Movement {
-  return { hash: `0x${String(timestamp).padStart(64, '0')}`, blockNumber: BigInt(timestamp), transactionIndex: 0, timestamp, direction, counterparty: PEER, amount }
+function mv(direction: Movement['direction'], amount: bigint, timestamp: number, wallet: Movement['wallet'] = WALLET): Movement {
+  return { hash: `0x${String(timestamp).padStart(64, '0')}`, blockNumber: BigInt(timestamp), transactionIndex: 0, timestamp, direction, wallet, counterparty: PEER, amount }
 }
 
 function fakes(overrides: Partial<Fetchers> = {}): Fetchers {
@@ -29,7 +29,7 @@ function fakes(overrides: Partial<Fetchers> = {}): Fetchers {
 
 describe('loadPnl', () => {
   it('prices each movement at its timestamp and computes the PnL', async () => {
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes() })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: fakes() })
     // bought 10 @ $1, sold 4 @ $3: realized 4×(3−1) = 8; held 6 @ $5 = 30, cost 6 → unrealized 24
     expect(res.symbol).toBe('TKN')
     expect(res.pnl?.totals.realized).toBe(8)
@@ -41,16 +41,16 @@ describe('loadPnl', () => {
   })
 
   it('returns the classified, priced movements for local recomputation without refetching', async () => {
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes() })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: fakes() })
     expect(res.movements).toEqual([
-      { hash: expect.any(String), timestamp: 100, class: 'buy', amount: 10n * 10n ** 18n, price: 1 },
-      { hash: expect.any(String), timestamp: 200, class: 'sell', amount: 4n * 10n ** 18n, price: 3 },
+      { hash: expect.any(String), timestamp: 100, wallet: WALLET, class: 'buy', amount: 10n * 10n ** 18n, price: 1 },
+      { hash: expect.any(String), timestamp: 200, wallet: WALLET, class: 'sell', amount: 4n * 10n ** 18n, price: 3 },
     ])
   })
 
   it('returns no PnL and fetches no prices when the wallet has no transfers', async () => {
     const f = fakes({ fetchTransfers: vi.fn(async () => ({ symbol: 'TKN', decimals: 18, movements: [] })) })
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: f })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: f })
     expect(res.pnl).toBeNull()
     expect(f.fetchHistoricalPrices).not.toHaveBeenCalled()
     expect(f.fetchCurrentPrice).not.toHaveBeenCalled()
@@ -58,15 +58,15 @@ describe('loadPnl', () => {
 
   it('uses the classes from the classifier', async () => {
     const f = fakes({ classifyMovements: vi.fn(async () => ['transferIn', 'deposit'] as MovementClass[]) })
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: f })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: f })
     expect(res.pnl?.rows.map((r) => r.class)).toEqual(['transferIn', 'deposit'])
     expect(res.pnl?.totals.realized).toBe(0)
-    expect(f.classifyMovements).toHaveBeenCalledWith(TOKEN, WALLET, expect.any(Array), expect.anything())
+    expect(f.classifyMovements).toHaveBeenCalledWith(TOKEN, [WALLET], expect.any(Array), expect.anything())
   })
 
   it('fails the load when the classifier fails', async () => {
     const f = fakes({ classifyMovements: vi.fn(async () => Promise.reject(new Error('RPC request failed while classifying movements: boom'))) })
-    await expect(loadPnl(TOKEN, WALLET, { fetchers: f })).rejects.toThrow(/classifying movements/)
+    await expect(loadPnl(TOKEN, [WALLET], { fetchers: f })).rejects.toThrow(/classifying movements/)
     expect(f.fetchHistoricalPrices).not.toHaveBeenCalled()
   })
 
@@ -78,7 +78,7 @@ describe('loadPnl', () => {
       }),
     })
     const onProgress = vi.fn()
-    await loadPnl(TOKEN, WALLET, { fetchers: f, onProgress })
+    await loadPnl(TOKEN, [WALLET], { fetchers: f, onProgress })
     expect(onProgress).toHaveBeenCalledWith(1, 2, 'classify')
   })
 
@@ -90,36 +90,55 @@ describe('loadPnl', () => {
       }),
     })
     const onProgress = vi.fn()
-    await loadPnl(TOKEN, WALLET, { fetchers: f, onProgress })
+    await loadPnl(TOKEN, [WALLET], { fetchers: f, onProgress })
     expect(onProgress).toHaveBeenCalledWith(2, 2, 'price')
   })
 
   it('leaves a movement DefiLlama has no price for unpriced', async () => {
     const f = fakes({ fetchHistoricalPrices: vi.fn(async () => new Map([[100, 1], [200, null]])) })
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: f })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: f })
     expect(res.pnl?.rows[1]?.price).toBeNull()
     expect(res.pnl?.flags.unpricedCount).toBe(1)
   })
 
   it('reports held value and unrealized as missing when there is no current price', async () => {
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes({ fetchCurrentPrice: vi.fn(async () => null) }) })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: fakes({ fetchCurrentPrice: vi.fn(async () => null) }) })
     expect(res.heldUsd).toBeNull()
     expect(res.pnl?.totals.total).toBeNull()
   })
 
   it('treats a bad current price as missing', async () => {
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes({ fetchCurrentPrice: vi.fn(async () => -1) }) })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: fakes({ fetchCurrentPrice: vi.fn(async () => -1) }) })
     expect(res.currentPrice).toBeNull()
     expect(res.heldUsd).toBeNull()
   })
 
   it('flags a mismatch with the on-chain balance', async () => {
-    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes({ balanceOf: vi.fn(async () => 5n) }) })
+    const res = await loadPnl(TOKEN, [WALLET], { fetchers: fakes({ balanceOf: vi.fn(async () => 5n) }) })
     expect(res.pnl?.flags.balanceMismatch).toBe(true)
+  })
+
+  it('computes one PnL over several wallets, checking held − deposited against the sum of their balances', async () => {
+    const B = '0x4444444444444444444444444444444444444444'
+    const f = fakes({
+      fetchTransfers: vi.fn(async () => ({
+        symbol: 'TKN',
+        decimals: 18,
+        movements: [mv('in', 10n * 10n ** 18n, 100), mv('out', 4n * 10n ** 18n, 200, B)],
+      })),
+      balanceOf: vi.fn(async (_token: string, wallet: string) => (wallet === WALLET ? 2n : 4n) * 10n ** 18n),
+    })
+    const res = await loadPnl(TOKEN, [WALLET, B], { fetchers: f })
+    expect(f.fetchTransfers).toHaveBeenCalledWith(TOKEN, [WALLET, B])
+    expect(f.classifyMovements).toHaveBeenCalledWith(TOKEN, [WALLET, B], expect.any(Array), expect.anything())
+    expect(res.onchainBalance).toBe(6n * 10n ** 18n)
+    expect(res.pnl?.flags.balanceMismatch).toBe(false)
+    expect(res.pnl?.totals.realized).toBe(8)
+    expect(res.movements.map((m) => m.wallet)).toEqual([WALLET, B])
   })
 
   it('fails clearly when the token decimals cannot be read', async () => {
     const f = fakes({ fetchTransfers: vi.fn(async () => ({ symbol: null, decimals: null, movements: [] })) })
-    await expect(loadPnl(TOKEN, WALLET, { fetchers: f })).rejects.toThrow(/decimals/)
+    await expect(loadPnl(TOKEN, [WALLET], { fetchers: f })).rejects.toThrow(/decimals/)
   })
 })

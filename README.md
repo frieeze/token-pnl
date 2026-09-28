@@ -1,14 +1,14 @@
 # token-pnl
 
-Compute the overall PnL of one wallet on one EVM token.
+Compute the overall PnL of 1 to 5 wallets of the same user on one EVM token, as one portfolio.
 
-**Input:** token address, chain, wallet address
-**Output:** total PnL (realized + unrealized) of that wallet on that token, in USD.
+**Input:** token address, chain, 1 to 5 wallet addresses
+**Output:** total PnL (realized + unrealized) of those wallets on that token, in USD.
 
 ## Usage
 
-Open the page, paste a token address and a wallet address (Ethereum only), and submit.
-The inputs go in the URL (`?token=0x…&wallet=0x…`), so a result can be shared or reloaded.
+Open the page, paste a token address and 1 to 5 wallet addresses, one per line (Ethereum only), and submit.
+The inputs go in the URL (`?token=0x…&wallet=0x…&wallet=0x…`), so a result can be shared or reloaded.
 
 Each movement's class can be changed to any class of the same direction with the dropdown in the
 Class column; overridden rows are marked. Overrides are stored in the `overrides` URL param, so a

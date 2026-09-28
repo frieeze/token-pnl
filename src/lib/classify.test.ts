@@ -37,7 +37,7 @@ const mv = (direction: Movement['direction'], counterparty: Address = POOL, hash
 const tx = (overrides: Partial<TxData> = {}): TxData => ({ from: PEER, value: 0n, logs: [], ...overrides })
 
 function classifyOne(m: Mv, t: TxData, contracts: Address[] = [POOL]) {
-  return applyRules({ token: TOKEN, wallet: WALLET, movements: [m], txs: new Map([[m.hash, t]]), contracts: new Set(contracts) })[0]
+  return applyRules({ token: TOKEN, wallets: [WALLET], movements: [m], txs: new Map([[m.hash, t]]), contracts: new Set(contracts) })[0]
 }
 
 describe('applyRules', () => {
@@ -86,7 +86,7 @@ describe('applyRules', () => {
       mv('in', POOL, h(6), 10n), // reward
     ]
     const txs = new Map(movements.map((m) => [m.hash, tx()]))
-    const classes = applyRules({ token: TOKEN, wallet: WALLET, movements, txs, contracts: new Set([POOL, VAULT]) })
+    const classes = applyRules({ token: TOKEN, wallets: [WALLET], movements, txs, contracts: new Set([POOL, VAULT]) })
     expect(classes).toEqual(['reward', 'deposit', 'reward', 'withdraw', 'withdraw', 'reward'])
   })
 
@@ -94,15 +94,43 @@ describe('applyRules', () => {
     const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
     const movements = [mv('out', POOL, h(1), 100n), mv('in', POOL, h(2), 120n), mv('in', POOL, h(3), 10n)]
     const txs = new Map(movements.map((m) => [m.hash, tx()]))
-    const classes = applyRules({ token: TOKEN, wallet: WALLET, movements, txs, contracts: new Set([POOL]) })
+    const classes = applyRules({ token: TOKEN, wallets: [WALLET], movements, txs, contracts: new Set([POOL]) })
     expect(classes).toEqual(['deposit', 'withdraw', 'reward'])
+  })
+})
+
+describe('applyRules with several wallets', () => {
+  const B = '0x4444444444444444444444444444444444444444'
+  const classifyOf = (m: Mv, t: TxData, contracts: Address[] = [POOL]) =>
+    applyRules({ token: TOKEN, wallets: [WALLET, B], movements: [m], txs: new Map([[m.hash, t]]), contracts: new Set(contracts) })[0]
+
+  it.each([
+    ['in to B, ETH sent by A → buy', mv('in'), tx({ from: WALLET, value: 1n, logs: [transfer(TOKEN, POOL, B)] }), 'buy'],
+    ['in to B, another token out of A → buy', mv('in'), tx({ logs: [transfer(OTHER_TOKEN, WALLET, POOL), transfer(TOKEN, POOL, B)] }), 'buy'],
+    ['out of B, WETH unwrapped in a tx sent by A → sell', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, B, POOL), wethWithdrawal] }), 'sell'],
+    ['out of B, another token minted to A → deposit', mv('out'), tx({ from: WALLET, logs: [transfer(TOKEN, B, POOL), transfer(OTHER_TOKEN, zeroAddress, WALLET)] }), 'deposit'],
+    ['in to B, another token burned by A → withdraw', mv('in'), tx({ logs: [transfer(OTHER_TOKEN, WALLET, zeroAddress), transfer(TOKEN, POOL, B)] }), 'withdraw'],
+  ] as const)('counts the legs of all the wallets: %s', (_name, m, t, expected) => {
+    expect(classifyOf(m, t)).toBe(expected)
+  })
+
+  it('does not count a transfer of another token between two of the wallets as a leg', () => {
+    const t = tx({ logs: [transfer(OTHER_TOKEN, WALLET, B), transfer(TOKEN, PEER, B)] })
+    expect(classifyOf(mv('in', PEER), t)).toBe('transferIn')
+  })
+
+  it('rule 7: counts deposits per contract across all the wallets', () => {
+    const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
+    const movements = [mv('out', POOL, h(1), 100n), mv('in', POOL, h(2), 100n)] // A deposits, B withdraws
+    const txs = new Map([[h(1), tx({ logs: [transfer(TOKEN, WALLET, POOL)] })], [h(2), tx({ logs: [transfer(TOKEN, POOL, B)] })]])
+    expect(applyRules({ token: TOKEN, wallets: [WALLET, B], movements, txs, contracts: new Set([POOL]) })).toEqual(['deposit', 'withdraw'])
   })
 })
 
 describe('classifyMovements', () => {
   const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
   const movement = (n: number, direction: Movement['direction'], counterparty: Address): Movement => ({
-    hash: h(n), blockNumber: BigInt(n), transactionIndex: 0, timestamp: n, direction, counterparty, amount: 1n,
+    hash: h(n), blockNumber: BigInt(n), transactionIndex: 0, timestamp: n, direction, wallet: WALLET, counterparty, amount: 1n,
   })
 
   /** A stub viem client over fixed txs and code, recording what was asked. */
@@ -133,7 +161,7 @@ describe('classifyMovements', () => {
       [POOL],
     )
 
-    const classes = await classifyMovements(TOKEN, WALLET, movements, { publicClient: client })
+    const classes = await classifyMovements(TOKEN, [WALLET], movements, { publicClient: client })
 
     expect(classes).toEqual(['buy', 'reward', 'deposit', 'transferIn', 'withdraw'])
     expect(client.getCode.mock.calls.map(([a]) => a.address).sort()).toEqual([POOL, PEER])
@@ -142,7 +170,7 @@ describe('classifyMovements', () => {
   it('treats an EOA with an EIP-7702 delegation as a wallet', async () => {
     const client = stubClient({ [h(1)]: tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, PEER)] }) }, [])
     client.getCode.mockResolvedValue(`0xef0100${POOL.slice(2).toLowerCase()}`)
-    expect(await classifyMovements(TOKEN, WALLET, [movement(1, 'out', PEER)], { publicClient: client })).toEqual(['transferOut'])
+    expect(await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', PEER)], { publicClient: client })).toEqual(['transferOut'])
   })
 
   it('fetches transactions 50 at a time (one JSON-RPC batch per chunk)', async () => {
@@ -150,7 +178,7 @@ describe('classifyMovements', () => {
     const movements = Array.from({ length: 51 }, (_, i) => movement(i + 1, 'in', PEER))
     const client = stubClient(Object.fromEntries(movements.map((m) => [m.hash, t])), [])
     const onProgress = vi.fn()
-    await classifyMovements(TOKEN, WALLET, movements, { publicClient: client, onProgress })
+    await classifyMovements(TOKEN, [WALLET], movements, { publicClient: client, onProgress })
     expect(onProgress.mock.calls).toEqual([[0, 51], [50, 51], [51, 51]])
   })
 
@@ -158,7 +186,7 @@ describe('classifyMovements', () => {
     const client = stubClient({ [h(1)]: tx() }, [])
     client.getTransactionReceipt.mockRejectedValueOnce(Object.assign(new Error('long details'), { shortMessage: 'HTTP request failed.' }))
     await expect(
-      classifyMovements(TOKEN, WALLET, [movement(1, 'in', PEER)], { publicClient: client }),
+      classifyMovements(TOKEN, [WALLET], [movement(1, 'in', PEER)], { publicClient: client }),
     ).rejects.toThrow('RPC request failed while classifying movements: HTTP request failed.')
   })
 
@@ -167,7 +195,7 @@ describe('classifyMovements', () => {
     const client = stubClient({ [h(1)]: t, [h(2)]: t }, [])
     const onProgress = vi.fn()
     const movements = [movement(1, 'in', PEER), movement(1, 'in', PEER), movement(2, 'in', PEER)]
-    await classifyMovements(TOKEN, WALLET, movements, { publicClient: client, onProgress })
+    await classifyMovements(TOKEN, [WALLET], movements, { publicClient: client, onProgress })
     expect(onProgress.mock.calls).toEqual([[0, 2], [2, 2]])
     expect(client.getTransaction).toHaveBeenCalledTimes(2)
   })
@@ -184,7 +212,7 @@ describe.skipIf(!process.env.LIVE)('classifyMovements (live RPC, opt-in, run wit
     ['transfer out to an EOA', PEPE, '0x2745d07dD4B9B1085ca5E9B0fB6E402fE20105dB', '0x1799a91b4a3149f80ba42b9fe69df2cd83736ccae1d79388abb4070bfd03e12b', 'out', '0x93228d328c9c74c2BFE9f97638bbb5ef322f2Bd5', 'transferOut'],
     ['Aave deposit (aToken minted)', USDC, '0xD4fa2D31b7968E448877f69A96DE69f5de8cD23E', '0x97e8a0732252f9bfcc765d68986a7316a81ca892b9c39354844563ebbb4f7247', 'out', '0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c', 'deposit'],
   ] as const)('%s', async (_name, token, wallet, hash, direction, counterparty, expected) => {
-    const m: Movement = { hash, blockNumber: 0n, transactionIndex: 0, timestamp: 0, direction, counterparty, amount: 1n }
-    expect(await classifyMovements(token, wallet, [m])).toEqual([expected])
+    const m: Movement = { hash, blockNumber: 0n, transactionIndex: 0, timestamp: 0, direction, wallet, counterparty, amount: 1n }
+    expect(await classifyMovements(token, [wallet], [m])).toEqual([expected])
   }, 30000)
 })

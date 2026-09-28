@@ -20,6 +20,8 @@ export interface Movement {
   transactionIndex: number
   timestamp: number // unix seconds
   direction: Direction
+  /** The wallet it touches: `to` for in, `from` for out. */
+  wallet: Address
   /** The other side: `from` for in, `to` for out. */
   counterparty: Address
   amount: bigint // raw token units
@@ -206,7 +208,7 @@ async function fetchWindow(
   }
 }
 
-function toMovement(row: BlockscoutTx, wallet: Address): Movement | null {
+function toMovement(row: BlockscoutTx, wallet: Address, wallets: readonly Address[]): Movement | null {
   let from: Address
   let to: Address
   try {
@@ -216,11 +218,11 @@ function toMovement(row: BlockscoutTx, wallet: Address): Movement | null {
     return null // malformed address in a row: skip rather than crash
   }
 
-  const fromIsWallet = isAddressEqual(from, wallet)
+  // Between two of the wallets (or a self-transfer): ignored (D15, pnl-rules.md). Blockscout lists it
+  // under both wallets, so it must be dropped from each list.
+  if (wallets.some((w) => isAddressEqual(from, w)) && wallets.some((w) => isAddressEqual(to, w))) return null
   const toIsWallet = isAddressEqual(to, wallet)
-
-  if (fromIsWallet && toIsWallet) return null // self-transfer: ignored (D1/D2, pnl-rules.md)
-  if (!fromIsWallet && !toIsWallet) return null // defensive: row doesn't touch the wallet
+  if (!toIsWallet && !isAddressEqual(from, wallet)) return null // defensive: row doesn't touch the wallet
 
   return {
     hash: row.hash as `0x${string}`,
@@ -228,42 +230,51 @@ function toMovement(row: BlockscoutTx, wallet: Address): Movement | null {
     transactionIndex: Number(row.transactionIndex),
     timestamp: Number(row.timeStamp),
     direction: toIsWallet ? 'in' : 'out',
+    wallet,
     counterparty: toIsWallet ? from : to,
     amount: BigInt(row.value),
   }
 }
 
 /**
- * Fetches every ERC-20 transfer of `token` touching `wallet` on Ethereum mainnet from
- * Blockscout, normalized to `Movement`s in chain order (block number, then transaction
- * index, then the order Blockscout returned them in - it gives no log index).
+ * Fetches every ERC-20 transfer of `token` touching one of `wallets` on Ethereum mainnet from
+ * Blockscout, normalized to `Movement`s merged in chain order (block number, then transaction
+ * index, then the order Blockscout returned them in - it gives no log index; within one tx,
+ * the wallets in the order given). Transfers between two of the wallets are dropped.
  *
- * If the wallet has no transfers, `movements` is an empty array. Since Blockscout then
+ * If the wallets have no transfers, `movements` is an empty array. Since Blockscout then
  * gives no row to read `tokenSymbol`/`tokenDecimal` from, `symbol`/`decimals` are instead
  * read on-chain (`symbol()`/`decimals()`) via the injected (or default) viem public client.
  */
 export async function fetchTransfers(
   token: string,
-  wallet: string,
+  wallets: readonly string[],
   opts: FetchTransfersOptions = {},
 ): Promise<FetchTransfersResult> {
   if (!isAddress(token)) throw new Error(`Invalid token address: ${token}`)
-  if (!isAddress(wallet)) throw new Error(`Invalid wallet address: ${wallet}`)
+  const bad = wallets.find((w) => !isAddress(w))
+  if (bad !== undefined) throw new Error(`Invalid wallet address: ${bad}`)
 
   const tokenAddr = getAddress(token)
-  const walletAddr = getAddress(wallet)
+  const walletAddrs = wallets.map((w) => getAddress(w))
   const fetchFn = opts.fetch ?? globalThis.fetch
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
   const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE
 
-  const rows = await fetchAllRows(tokenAddr, walletAddr, fetchFn, baseUrl, pageSize)
-
-  const movements = rows
-    .map((row) => toMovement(row, walletAddr))
-    .filter((m): m is Movement => m !== null)
+  const rows: BlockscoutTx[] = []
+  const movements: Movement[] = []
+  // One wallet at a time: parallel requests would trip Blockscout's IP rate limit sooner.
+  for (const wallet of walletAddrs) {
+    const walletRows = await fetchAllRows(tokenAddr, wallet, fetchFn, baseUrl, pageSize)
+    rows.push(...walletRows)
+    for (const row of walletRows) {
+      const m = toMovement(row, wallet, walletAddrs)
+      if (m) movements.push(m)
+    }
+  }
 
   // Stable sort: ties (same block, same tx index) keep the array's existing order, which
-  // is the order Blockscout returned them in, as required by pnl-rules.md.
+  // is the wallets in the order given, then the order Blockscout returned them in (pnl-rules.md).
   movements.sort((a, b) => {
     if (a.blockNumber !== b.blockNumber) return a.blockNumber < b.blockNumber ? -1 : 1
     return a.transactionIndex - b.transactionIndex
