@@ -4,10 +4,12 @@
   import { loadPnl, type LoadResult, type LoadStep } from './lib/load'
   import { allowedClasses, applyOverrides, keysOf, parseOverridesParam, withOverride, withOverridesParam, type Overrides } from './lib/overrides'
   import { computePnl, type MovementClass } from './lib/pnl'
+  import { parseWallets } from './lib/wallets'
 
   const params = new URLSearchParams(location.search)
   let token = $state(params.get('token') ?? '')
-  let wallet = $state(params.get('wallet') ?? '')
+  // One `wallet` param per wallet, so an old single-wallet link still works.
+  let wallets = $state(params.getAll('wallet').join('\n'))
   let invalid = $state('')
   let loading = $state(false)
   let progress = $state<{ done: number; total: number; step: LoadStep } | null>(null)
@@ -19,6 +21,7 @@
 
   const sign = (n: number | null) => (n === null || n === 0 ? '' : n > 0 ? 'pos' : 'neg')
   const shortHash = (h: string) => `${h.slice(0, 8)}…${h.slice(-6)}`
+  const shortAddress = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
   const movementKeys = $derived(keysOf(result?.movements ?? []))
   const classes = $derived(applyOverrides(result?.movements ?? [], overrides))
@@ -44,17 +47,17 @@
   }
 
   // `keepOverrides`: the initial load from a shared URL keeps its overrides; a fresh manual
-  // search (new token/wallet) starts clean, since old overrides key movements that no longer apply.
+  // search (new token/wallets) starts clean, since old overrides key movements that no longer apply.
   async function submit(event?: SubmitEvent, { keepOverrides = false } = {}) {
     event?.preventDefault()
     token = token.trim()
-    wallet = wallet.trim()
+    const parsed = parseWallets(wallets)
     invalid = !isAddress(token)
       ? 'Invalid token address: expected 0x followed by 40 hex characters (with a valid checksum if mixed-case).'
-      : !isAddress(wallet)
-        ? 'Invalid wallet address: expected 0x followed by 40 hex characters (with a valid checksum if mixed-case).'
+      : 'error' in parsed
+        ? parsed.error
         : ''
-    if (invalid) {
+    if (invalid || 'error' in parsed) {
       // Drop any run still in progress so its result can't land behind this message.
       runId++
       loading = false
@@ -63,15 +66,17 @@
       return
     }
 
+    wallets = parsed.wallets.join('\n')
     if (!keepOverrides) overrides = new Map()
-    history.replaceState(null, '', `?${withOverridesParam(new URLSearchParams({ token, wallet }), overrides)}`)
+    const search = new URLSearchParams([['token', token], ...parsed.wallets.map((w) => ['wallet', w])])
+    history.replaceState(null, '', `?${withOverridesParam(search, overrides)}`)
     const id = ++runId
     loading = true
     progress = null
     error = ''
     result = null
     try {
-      const r = await loadPnl(token, wallet, {
+      const r = await loadPnl(token, parsed.wallets, {
         onProgress: (done, total, step) => {
           if (id === runId) progress = { done, total, step }
         },
@@ -84,12 +89,12 @@
     }
   }
 
-  if (params.get('token') && params.get('wallet')) submit(undefined, { keepOverrides: true })
+  if (params.get('token') && params.getAll('wallet').some(Boolean)) submit(undefined, { keepOverrides: true })
 </script>
 
 <main>
   <h1>token-pnl</h1>
-  <p class="lead">PnL of one wallet on one ERC-20 token (weighted average cost, USD).</p>
+  <p class="lead">PnL of up to 5 wallets on one ERC-20 token, as one portfolio (weighted average cost, USD).</p>
 
   <form onsubmit={submit}>
     <label>
@@ -97,8 +102,8 @@
       <input bind:value={token} placeholder="0x…" spellcheck="false" autocomplete="off" required />
     </label>
     <label>
-      Wallet address
-      <input bind:value={wallet} placeholder="0x…" spellcheck="false" autocomplete="off" required />
+      Wallet addresses (1 to 5, one per line)
+      <textarea bind:value={wallets} rows="3" placeholder="0x…" spellcheck="false" autocomplete="off" required></textarea>
     </label>
     <label>
       Chain
@@ -126,7 +131,7 @@
     <p class="msg error" role="alert">{error}</p>
   {:else if result && !result.pnl}
     <p class="msg">
-      No transfers of {result.symbol ?? 'this token'} for this wallet on Ethereum. Check the addresses (token vs.
+      No transfers of {result.symbol ?? 'this token'} for these wallets on Ethereum. Check the addresses (token vs.
       wallet) and the chain.
     </p>
   {:else if result?.pnl && pnl}
@@ -146,14 +151,14 @@
         {/if}
         {#if pnl.flags.oversell}
           <li>
-            <strong>Incomplete result:</strong> the wallet sent out more than it had received (rebasing or fee-on-transfer
+            <strong>Incomplete result:</strong> the wallets sent out more than they had received (rebasing or fee-on-transfer
             token?). The excess counts as sold at a cost of $0.
           </li>
         {/if}
         {#if pnl.flags.balanceMismatch}
           <li>
             <strong>Balance mismatch:</strong> computed holding {formatAmount(t.held, decimals)} {unit}, on-chain balance
-            {formatAmount(onchainBalance, decimals)} {unit}. Likely a rebasing, reflection or fee-on-transfer token.
+            (all wallets) {formatAmount(onchainBalance, decimals)} {unit}. Likely a rebasing, reflection or fee-on-transfer token.
           </li>
         {/if}
         {#if currentPrice === null}
@@ -182,12 +187,13 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Date</th><th>Class</th><th class="num">Amount</th><th class="num">Price</th><th class="num">USD value</th><th>Tx</th></tr>
+          <tr><th>Date</th><th>Wallet</th><th>Class</th><th class="num">Amount</th><th class="num">Price</th><th class="num">USD value</th><th>Tx</th></tr>
         </thead>
         <tbody>
           {#each pnl.rows as row, i}
             <tr>
               <td>{formatDate(row.timestamp)}</td>
+              <td><code title={result.movements[i]!.wallet}>{shortAddress(result.movements[i]!.wallet)}</code></td>
               <td class={row.class === 'buy' ? 'pos' : row.class === 'sell' ? 'neg' : ''}>
                 <select
                   value={row.class}
@@ -234,6 +240,7 @@
     font-weight: 600;
   }
   input,
+  textarea,
   select,
   button {
     font: inherit;
@@ -243,7 +250,8 @@
     border-radius: 6px;
     min-width: 0;
   }
-  input {
+  input,
+  textarea {
     font-family: ui-monospace, monospace;
     font-size: 0.85rem;
   }

@@ -1,7 +1,7 @@
 // Orchestrates one page load: transfers + balance → classes → historical prices → current price → PnL.
 // Fetchers are injectable so this is unit-testable without the network.
 
-import { getAddress } from 'viem'
+import { getAddress, type Address } from 'viem'
 import { classifyMovements } from './classify'
 import { computePnl, validPrice, type PnlResult, type PricedMovement } from './pnl'
 import { fetchCurrentPrice, fetchHistoricalPrices } from './prices'
@@ -27,9 +27,10 @@ export interface LoadOptions {
 export interface LoadResult {
   symbol: string | null
   decimals: number
-  /** `null` when the wallet has no transfers of this token. */
+  /** `null` when the wallets have no transfers of this token. */
   pnl: PnlResult | null
   currentPrice: number | null
+  /** Sum of the wallets' balances. */
   onchainBalance: bigint
   /** held × current price; `null` when the current price is missing. */
   heldUsd: number | null
@@ -37,17 +38,19 @@ export interface LoadResult {
    * The classified, priced movements `pnl` was computed from (in chain order), so the page can
    * recompute the PnL locally (e.g. after a class override) without refetching. `[]` when `pnl` is null.
    */
-  movements: PricedMovement[]
+  movements: (PricedMovement & { wallet: Address })[]
 }
 
 const defaultFetchers: Fetchers = { fetchTransfers, classifyMovements, balanceOf, fetchHistoricalPrices, fetchCurrentPrice }
 
-export async function loadPnl(token: string, wallet: string, opts: LoadOptions = {}): Promise<LoadResult> {
+/** One PnL over all of `wallets` (D15). They must be distinct: a repeated wallet is counted twice. */
+export async function loadPnl(token: string, wallets: readonly string[], opts: LoadOptions = {}): Promise<LoadResult> {
   const f = opts.fetchers ?? defaultFetchers
-  const [{ symbol, decimals, movements }, onchainBalance] = await Promise.all([
-    f.fetchTransfers(token, wallet),
-    f.balanceOf(token, wallet),
+  const [{ symbol, decimals, movements }, balances] = await Promise.all([
+    f.fetchTransfers(token, wallets),
+    Promise.all(wallets.map((w) => f.balanceOf(token, w))),
   ])
+  const onchainBalance = balances.reduce((a, b) => a + b, 0n)
   if (decimals === null) throw new Error("Could not read the token's decimals: is this an ERC-20 token?")
 
   if (movements.length === 0) {
@@ -55,7 +58,7 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   }
 
   const tokenAddr = getAddress(token)
-  const classes = await f.classifyMovements(tokenAddr, getAddress(wallet), movements, {
+  const classes = await f.classifyMovements(tokenAddr, wallets.map((w) => getAddress(w)), movements, {
     onProgress: (done, total) => opts.onProgress?.(done, total, 'classify'),
   })
   const [prices, rawCurrentPrice] = await Promise.all([
@@ -67,9 +70,10 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   // Clean once so the page never shows a bad value that the PnL treats as missing.
   const currentPrice = validPrice(rawCurrentPrice)
 
-  const priced: PricedMovement[] = movements.map((m, i) => ({
+  const priced = movements.map((m, i) => ({
     hash: m.hash,
     timestamp: m.timestamp,
+    wallet: m.wallet,
     class: classes[i]!,
     amount: m.amount,
     price: prices.get(m.timestamp) ?? null,

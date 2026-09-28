@@ -13,7 +13,7 @@ export interface TxData {
 
 export interface RulesInput {
   token: Address
-  wallet: Address
+  wallets: readonly Address[]
   /** In chain order. */
   movements: readonly Pick<Movement, 'hash' | 'direction' | 'counterparty' | 'amount'>[]
   txs: ReadonlyMap<Hash, TxData>
@@ -28,9 +28,10 @@ const WITHDRAWAL = toEventSelector('Withdrawal(address,uint256)')
 /** The address in an indexed topic (last 20 bytes). */
 const topicAddress = (topic: Hash) => `0x${topic.slice(26)}` as Address
 
-/** What the wallet sent and received in `tx` besides `token`. */
-function legs(tx: TxData, token: Address, wallet: Address) {
-  const fromWallet = isAddressEqual(tx.from, wallet)
+/** What the wallets sent and received in `tx` besides `token` (any of them, D15). */
+function legs(tx: TxData, token: Address, wallets: readonly Address[]) {
+  const isWallet = (a: Address) => wallets.some((w) => isAddressEqual(a, w))
+  const fromWallet = isWallet(tx.from)
   let tokenIn = false
   let tokenOut = false
   let minted = false
@@ -45,11 +46,13 @@ function legs(tx: TxData, token: Address, wallet: Address) {
     if (/^0x0*$/.test(log.data)) continue
     const from = topicAddress(log.topics[1]!)
     const to = topicAddress(log.topics[2]!)
-    if (isAddressEqual(to, wallet)) {
+    const toWallet = isWallet(to)
+    // Exactly one side among the wallets: a transfer between two of them is not a leg.
+    if (toWallet === isWallet(from)) continue
+    if (toWallet) {
       tokenIn = true
       if (isAddressEqual(from, zeroAddress)) minted = true
-    }
-    if (isAddressEqual(from, wallet)) {
+    } else {
       tokenOut = true
       if (isAddressEqual(to, zeroAddress)) burned = true
     }
@@ -64,8 +67,8 @@ type RulesMovement = RulesInput['movements'][number]
  * After rules 3–4 no opposite leg is left, so a leg in the same direction (e.g. two reward
  * tokens claimed at once) does not block rules 5–8.
  */
-function legRule(m: RulesMovement, tx: TxData, token: Address, wallet: Address): MovementClass | null {
-  const leg = legs(tx, token, wallet)
+function legRule(m: RulesMovement, tx: TxData, token: Address, wallets: readonly Address[]): MovementClass | null {
+  const leg = legs(tx, token, wallets)
   if (m.direction === 'out' && leg.minted) return 'deposit'
   if (m.direction === 'in' && leg.burned) return 'withdraw'
   if (m.direction === 'in' && leg.out) return 'buy'
@@ -76,10 +79,10 @@ function legRule(m: RulesMovement, tx: TxData, token: Address, wallet: Address):
 
 /** Applies the rules table (first match wins) to each movement, in chain order. */
 export function applyRules(input: RulesInput): MovementClass[] {
-  // Rule 7: amount deposited (rule 6) and not yet withdrawn, per contract, by our own count.
+  // Rule 7: amount deposited (rule 6) and not yet withdrawn, per contract across all the wallets, by our own count.
   const depositsOut = new Map<Address, bigint>()
   return input.movements.map((m) => {
-    const byLegs = legRule(m, input.txs.get(m.hash)!, input.token, input.wallet)
+    const byLegs = legRule(m, input.txs.get(m.hash)!, input.token, input.wallets)
     if (byLegs) return byLegs
     if (!input.contracts.has(m.counterparty)) return m.direction === 'out' ? 'transferOut' : 'transferIn'
     const out = depositsOut.get(m.counterparty) ?? 0n
@@ -127,11 +130,12 @@ async function inChunks<T, R>(items: T[], size: number, fn: (item: T) => Promise
  */
 export async function classifyMovements(
   token: Address,
-  wallet: Address,
+  wallets: readonly Address[],
   movements: readonly Movement[],
   opts: ClassifyOptions = {},
 ): Promise<MovementClass[]> {
   const client = opts.publicClient ?? defaultClient()
+  // A tx that touches several wallets is fetched once.
   const hashes = [...new Set(movements.map((m) => m.hash))]
   opts.onProgress?.(0, hashes.length)
   const fetched = await rpc(
@@ -148,14 +152,14 @@ export async function classifyMovements(
   const txs = new Map<Hash, TxData>(fetched)
 
   const toCheck = [
-    ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallet)).map((m) => m.counterparty)),
+    ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallets)).map((m) => m.counterparty)),
   ]
   const codes = await rpc(inChunks(toCheck, CODES_PER_CHUNK, (address) => client.getCode({ address })))
   // An EOA with an EIP-7702 delegation has code `0xef0100‖address`: still a wallet, not a contract.
   const isContract = (code: Hash | undefined) => code !== undefined && code !== '0x' && !code.startsWith('0xef0100')
   const contracts = new Set(toCheck.filter((_, i) => isContract(codes[i])))
 
-  return applyRules({ token, wallet, movements, txs, contracts })
+  return applyRules({ token, wallets, movements, txs, contracts })
 }
 
 /** Rethrows an RPC failure with a message the page can show. */
