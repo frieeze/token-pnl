@@ -2,13 +2,14 @@
 
 ## Problem
 
-Given `(chain, token, wallet)`, work out how much the wallet made or lost on the token:
+Given `(chain, token, wallets)` (1 to 5 wallets of the same user, D15), work out how much they made or lost on the token:
 every time it acquired the token, at what price; every time it got rid of it, at what price;
 and what the remaining balance is worth now.
 
 ## Pipeline (draft)
 
-1. **Collect movements.** All ERC-20 `Transfer` events of `token` where `wallet` is sender or receiver,
+1. **Collect movements.** All ERC-20 `Transfer` events of `token` where one of the wallets is sender or receiver
+   (transfers between two of the wallets are dropped),
    with block, timestamp and tx hash.
 2. **Classify each movement.** Buy, sell, deposit, withdraw, reward, transfer in/out (D10).
    This decides how it affects cost basis.
