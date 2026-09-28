@@ -12,7 +12,7 @@ import {
 } from 'viem'
 import { mainnet } from 'viem/chains'
 
-export type Direction = 'buy' | 'sell'
+export type Direction = 'in' | 'out'
 
 export interface Movement {
   hash: `0x${string}`
@@ -20,6 +20,8 @@ export interface Movement {
   transactionIndex: number
   timestamp: number // unix seconds
   direction: Direction
+  /** The other side: `from` for in, `to` for out. */
+  counterparty: Address
   amount: bigint // raw token units
 }
 
@@ -75,9 +77,10 @@ const MAX_ROWS = 200_000
 // spin up a new viem client (and its transport) per call.
 let sharedClient: PublicClient | undefined
 
-function defaultClient(): PublicClient {
+export function defaultClient(): PublicClient {
   if (!sharedClient) {
-    sharedClient = createPublicClient({ chain: mainnet, transport: http(DEFAULT_RPC_URL) })
+    // Batching: calls made in the same tick go out as one JSON-RPC batch request (the classifier relies on it).
+    sharedClient = createPublicClient({ chain: mainnet, transport: http(DEFAULT_RPC_URL, { batch: { batchSize: 100 } }) })
   }
   return sharedClient
 }
@@ -224,7 +227,8 @@ function toMovement(row: BlockscoutTx, wallet: Address): Movement | null {
     blockNumber: BigInt(row.blockNumber),
     transactionIndex: Number(row.transactionIndex),
     timestamp: Number(row.timeStamp),
-    direction: toIsWallet ? 'buy' : 'sell',
+    direction: toIsWallet ? 'in' : 'out',
+    counterparty: toIsWallet ? from : to,
     amount: BigInt(row.value),
   }
 }

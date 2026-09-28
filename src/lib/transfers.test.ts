@@ -64,7 +64,7 @@ function fakeBlockscout(history: ReturnType<typeof row>[]) {
 }
 
 describe('fetchTransfers', () => {
-  it('normalizes a single incoming transfer as a buy', async () => {
+  it('normalizes a single incoming transfer as in, from its sender', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row()]))
 
     const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
@@ -77,13 +77,14 @@ describe('fetchTransfers', () => {
         blockNumber: 100n,
         transactionIndex: 1,
         timestamp: 1700000000,
-        direction: 'buy',
+        direction: 'in',
+        counterparty: OTHER,
         amount: 1000000n,
       },
     ])
   })
 
-  it('normalizes an outgoing transfer as a sell', async () => {
+  it('normalizes an outgoing transfer as out, to its recipient', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(okResponse([row({ from: WALLET, to: OTHER, value: '5000000' })]))
@@ -91,7 +92,8 @@ describe('fetchTransfers', () => {
     const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
 
     expect(result.movements).toHaveLength(1)
-    expect(result.movements[0].direction).toBe('sell')
+    expect(result.movements[0].direction).toBe('out')
+    expect(result.movements[0].counterparty).toBe(OTHER)
     expect(result.movements[0].amount).toBe(5000000n)
   })
 
@@ -113,7 +115,7 @@ describe('fetchTransfers', () => {
     const result = await fetchTransfers(TOKEN, WALLET, { fetch: fetchMock })
 
     expect(result.movements).toHaveLength(1)
-    expect(result.movements[0].direction).toBe('buy')
+    expect(result.movements[0].direction).toBe('in')
   })
 
   it('orders movements by block number then transaction index then API order', async () => {
