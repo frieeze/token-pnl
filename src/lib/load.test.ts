@@ -40,6 +40,14 @@ describe('loadPnl', () => {
     expect(res.pnl?.rows.map((r) => r.price)).toEqual([1, 3])
   })
 
+  it('returns the classified, priced movements for local recomputation without refetching', async () => {
+    const res = await loadPnl(TOKEN, WALLET, { fetchers: fakes() })
+    expect(res.movements).toEqual([
+      { hash: expect.any(String), timestamp: 100, class: 'buy', amount: 10n * 10n ** 18n, price: 1 },
+      { hash: expect.any(String), timestamp: 200, class: 'sell', amount: 4n * 10n ** 18n, price: 3 },
+    ])
+  })
+
   it('returns no PnL and fetches no prices when the wallet has no transfers', async () => {
     const f = fakes({ fetchTransfers: vi.fn(async () => ({ symbol: 'TKN', decimals: 18, movements: [] })) })
     const res = await loadPnl(TOKEN, WALLET, { fetchers: f })

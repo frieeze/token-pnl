@@ -3,7 +3,7 @@
 
 import { getAddress } from 'viem'
 import { classifyMovements } from './classify'
-import { computePnl, validPrice, type PnlResult } from './pnl'
+import { computePnl, validPrice, type PnlResult, type PricedMovement } from './pnl'
 import { fetchCurrentPrice, fetchHistoricalPrices } from './prices'
 import { balanceOf, fetchTransfers } from './transfers'
 
@@ -33,6 +33,11 @@ export interface LoadResult {
   onchainBalance: bigint
   /** held × current price; `null` when the current price is missing. */
   heldUsd: number | null
+  /**
+   * The classified, priced movements `pnl` was computed from (in chain order), so the page can
+   * recompute the PnL locally (e.g. after a class override) without refetching. `[]` when `pnl` is null.
+   */
+  movements: PricedMovement[]
 }
 
 const defaultFetchers: Fetchers = { fetchTransfers, classifyMovements, balanceOf, fetchHistoricalPrices, fetchCurrentPrice }
@@ -45,7 +50,9 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   ])
   if (decimals === null) throw new Error("Could not read the token's decimals: is this an ERC-20 token?")
 
-  if (movements.length === 0) return { symbol, decimals, pnl: null, currentPrice: null, onchainBalance, heldUsd: null }
+  if (movements.length === 0) {
+    return { symbol, decimals, pnl: null, currentPrice: null, onchainBalance, heldUsd: null, movements: [] }
+  }
 
   const tokenAddr = getAddress(token)
   const classes = await f.classifyMovements(tokenAddr, getAddress(wallet), movements, {
@@ -60,17 +67,15 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   // Clean once so the page never shows a bad value that the PnL treats as missing.
   const currentPrice = validPrice(rawCurrentPrice)
 
-  const pnl = computePnl({
-    decimals,
-    movements: movements.map((m, i) => ({
-      ...m,
-      class: classes[i]!,
-      price: prices.get(m.timestamp) ?? null,
-    })),
-    currentPrice,
-    onchainBalance,
-  })
+  const priced: PricedMovement[] = movements.map((m, i) => ({
+    hash: m.hash,
+    timestamp: m.timestamp,
+    class: classes[i]!,
+    amount: m.amount,
+    price: prices.get(m.timestamp) ?? null,
+  }))
+  const pnl = computePnl({ decimals, movements: priced, currentPrice, onchainBalance })
   // unrealized + cost = held × current price, reusing pnl's validation of the current price
   const heldUsd = pnl.totals.unrealized === null ? null : pnl.totals.unrealized + pnl.totals.cost
-  return { symbol, decimals, pnl, currentPrice, onchainBalance, heldUsd }
+  return { symbol, decimals, pnl, currentPrice, onchainBalance, heldUsd, movements: priced }
 }

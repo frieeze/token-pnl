@@ -10,6 +10,10 @@ Compute the overall PnL of one wallet on one EVM token.
 Open the page, paste a token address and a wallet address (Ethereum only), and submit.
 The inputs go in the URL (`?token=0x…&wallet=0x…`), so a result can be shared or reloaded.
 
+Each movement's class can be changed to any class of the same direction with the dropdown in the
+Class column; overridden rows are marked. Overrides are stored in the `overrides` URL param, so a
+shared link reproduces the same result.
+
 ## Docs
 
 - [docs/overview.md](docs/overview.md): problem, approach, data sources
