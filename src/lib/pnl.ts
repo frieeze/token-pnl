@@ -2,14 +2,19 @@
 // Pure module: no network, no Svelte, no clock.
 
 import { formatUnits, type Hash } from 'viem'
-import type { Direction } from './transfers'
+
+/** The class assigned to a movement (D10). Determines how it is accounted for. */
+export type MovementClass = 'buy' | 'sell' | 'deposit' | 'withdraw' | 'reward' | 'transferIn' | 'transferOut'
+
+/** Only these classes need a price; a missing price on any other class is not a flag. */
+const PRICED_CLASSES: readonly MovementClass[] = ['buy', 'sell', 'transferIn']
 
 /** A movement with its USD price at the block timestamp (`null` when unpriced). */
 export interface PricedMovement {
   hash: Hash
   /** Unix seconds. */
   timestamp: number
-  direction: Direction
+  class: MovementClass
   /** Raw token amount (smallest unit). */
   amount: bigint
   /** `null`, or a value that is not a finite number ≥ 0, means unpriced. */
@@ -32,6 +37,8 @@ export interface PnlTotals {
   /** `null` when `unrealized` is missing. */
   total: number | null
   held: bigint
+  /** Token quantity currently out in protocols (still counted in `held`). */
+  deposited: bigint
   cost: number
   /** USD per whole token; `null` when nothing is held. */
   averageCost: number | null
@@ -54,7 +61,7 @@ export interface PnlFlags {
 export interface PnlRow {
   timestamp: number
   hash: Hash
-  direction: Direction
+  class: MovementClass
   amount: bigint
   price: number | null
   /** amount × price; `null` when unpriced. */
@@ -76,6 +83,7 @@ export function computePnl(input: PnlInput): PnlResult {
   const toTokens = (raw: bigint) => Number(formatUnits(raw, decimals))
 
   let held = 0n
+  let deposited = 0n
   let cost = 0
   let boughtQuantity = 0n
   let boughtUsd = 0
@@ -88,33 +96,69 @@ export function computePnl(input: PnlInput): PnlResult {
 
   for (const m of movements) {
     if (m.amount < 0n) throw new RangeError(`Negative amount in movement ${m.hash}`)
+    const needsPrice = PRICED_CLASSES.includes(m.class)
     const price = validPrice(m.price)
-    if (price === null) unpricedCount += 1
+    if (needsPrice && price === null) unpricedCount += 1
     const q = toTokens(m.amount)
     const usd = q * (price ?? 0)
-    if (m.direction === 'buy') {
-      held += m.amount
-      cost += usd
-      boughtQuantity += m.amount
-      boughtUsd += usd
-    } else {
-      // Oversell clamp: only the part covered by `held` carries cost; the excess
-      // leaves at average cost 0, so all its proceeds are realized.
-      if (m.amount > held) oversell = true
-      const covered = m.amount > held ? held : m.amount
-      // A sell that empties the position removes the whole remaining cost,
-      // so cost is exactly 0 on a full exit (no float dust).
-      const removedCost = covered === held ? cost : toTokens(covered) * (cost / toTokens(held))
-      realized += usd - removedCost
-      cost -= removedCost
-      held -= covered
-      soldQuantity += m.amount
-      soldUsd += usd
+
+    switch (m.class) {
+      case 'buy': {
+        held += m.amount
+        cost += usd
+        boughtQuantity += m.amount
+        boughtUsd += usd
+        break
+      }
+      case 'transferIn': {
+        // Transfer in: as a buy, but not counted in total bought.
+        held += m.amount
+        cost += usd
+        break
+      }
+      case 'reward': {
+        // Reward: cost 0.
+        held += m.amount
+        break
+      }
+      case 'deposit': {
+        deposited += m.amount
+        break
+      }
+      case 'withdraw': {
+        const w = m.amount < deposited ? m.amount : deposited
+        deposited -= w
+        const excess = m.amount - w
+        // The excess counts as a reward: cost 0.
+        held += excess
+        break
+      }
+      case 'sell':
+      case 'transferOut': {
+        // Oversell clamp: only the part covered by `held - deposited` carries cost; the
+        // excess leaves at average cost 0, so all its proceeds are realized (sell only).
+        const available = held > deposited ? held - deposited : 0n
+        if (m.amount > available) oversell = true
+        const covered = m.amount > available ? available : m.amount
+        // Only a sell/transfer that empties the whole position (nothing deposited) removes the
+        // whole remaining cost, so cost is exactly 0 on a full exit (no float dust). Emptying just
+        // the available balance must not: deposited tokens keep their cost.
+        const removedCost = covered === held ? cost : toTokens(covered) * (cost / toTokens(held))
+        if (m.class === 'sell') {
+          realized += usd - removedCost
+          soldQuantity += m.amount
+          soldUsd += usd
+        }
+        cost -= removedCost
+        held -= covered
+        break
+      }
     }
+
     rows.push({
       timestamp: m.timestamp,
       hash: m.hash,
-      direction: m.direction,
+      class: m.class,
       amount: m.amount,
       price,
       usdValue: price === null ? null : usd,
@@ -134,6 +178,7 @@ export function computePnl(input: PnlInput): PnlResult {
       unrealized,
       total: unrealized === null ? null : realized + unrealized,
       held,
+      deposited,
       cost,
       averageCost: held === 0n ? null : cost / heldTokens,
       boughtQuantity,
@@ -146,7 +191,7 @@ export function computePnl(input: PnlInput): PnlResult {
       reasons,
       unpricedCount,
       oversell,
-      balanceMismatch: held !== input.onchainBalance,
+      balanceMismatch: held - deposited !== input.onchainBalance,
     },
     rows,
   }

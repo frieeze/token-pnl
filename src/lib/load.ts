@@ -49,9 +49,14 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   // Clean once so the page never shows a bad value that the PnL treats as missing.
   const currentPrice = validPrice(rawCurrentPrice)
 
+  // Until the classifier (#15) lands, every inflow is a buy and every outflow a sell.
   const pnl = computePnl({
     decimals,
-    movements: movements.map((m) => ({ ...m, price: prices.get(m.timestamp) ?? null })),
+    movements: movements.map((m) => ({
+      ...m,
+      class: m.direction === 'buy' ? 'buy' : 'sell',
+      price: prices.get(m.timestamp) ?? null,
+    })),
     currentPrice,
     onchainBalance,
   })
