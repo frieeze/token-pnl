@@ -1,20 +1,23 @@
-// Orchestrates one page load: transfers + balance → historical prices → current price → PnL.
+// Orchestrates one page load: transfers + balance → classes → historical prices → current price → PnL.
 // Fetchers are injectable so this is unit-testable without the network.
 
 import { getAddress } from 'viem'
+import { classifyMovements } from './classify'
 import { computePnl, validPrice, type PnlResult } from './pnl'
 import { fetchCurrentPrice, fetchHistoricalPrices } from './prices'
 import { balanceOf, fetchTransfers } from './transfers'
 
 export interface Fetchers {
   fetchTransfers: typeof fetchTransfers
+  classifyMovements: typeof classifyMovements
   balanceOf: typeof balanceOf
   fetchHistoricalPrices: typeof fetchHistoricalPrices
   fetchCurrentPrice: typeof fetchCurrentPrice
 }
 
 export interface LoadOptions {
-  onProgress?: (done: number, total: number) => void
+  /** `classify`: transactions fetched; `price`: timestamps priced. */
+  onProgress?: (done: number, total: number, step: 'classify' | 'price') => void
   fetchers?: Fetchers
 }
 
@@ -29,7 +32,7 @@ export interface LoadResult {
   heldUsd: number | null
 }
 
-const defaultFetchers: Fetchers = { fetchTransfers, balanceOf, fetchHistoricalPrices, fetchCurrentPrice }
+const defaultFetchers: Fetchers = { fetchTransfers, classifyMovements, balanceOf, fetchHistoricalPrices, fetchCurrentPrice }
 
 export async function loadPnl(token: string, wallet: string, opts: LoadOptions = {}): Promise<LoadResult> {
   const f = opts.fetchers ?? defaultFetchers
@@ -42,19 +45,23 @@ export async function loadPnl(token: string, wallet: string, opts: LoadOptions =
   if (movements.length === 0) return { symbol, decimals, pnl: null, currentPrice: null, onchainBalance, heldUsd: null }
 
   const tokenAddr = getAddress(token)
+  const classes = await f.classifyMovements(tokenAddr, getAddress(wallet), movements, {
+    onProgress: (done, total) => opts.onProgress?.(done, total, 'classify'),
+  })
   const [prices, rawCurrentPrice] = await Promise.all([
-    f.fetchHistoricalPrices(tokenAddr, movements.map((m) => m.timestamp), { onProgress: opts.onProgress }),
+    f.fetchHistoricalPrices(tokenAddr, movements.map((m) => m.timestamp), {
+      onProgress: (done, total) => opts.onProgress?.(done, total, 'price'),
+    }),
     f.fetchCurrentPrice(tokenAddr),
   ])
   // Clean once so the page never shows a bad value that the PnL treats as missing.
   const currentPrice = validPrice(rawCurrentPrice)
 
-  // Until the classifier (#15) lands, every inflow is a buy and every outflow a sell.
   const pnl = computePnl({
     decimals,
-    movements: movements.map((m) => ({
+    movements: movements.map((m, i) => ({
       ...m,
-      class: m.direction === 'buy' ? 'buy' : 'sell',
+      class: classes[i]!,
       price: prices.get(m.timestamp) ?? null,
     })),
     currentPrice,

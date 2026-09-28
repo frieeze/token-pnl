@@ -8,7 +8,7 @@
   let wallet = $state(params.get('wallet') ?? '')
   let invalid = $state('')
   let loading = $state(false)
-  let progress = $state<{ done: number; total: number } | null>(null)
+  let progress = $state<{ done: number; total: number; step: 'classify' | 'price' } | null>(null)
   let error = $state('')
   let result = $state.raw<LoadResult | null>(null)
   // Ignores the answer of an older run if the user submitted again meanwhile.
@@ -43,8 +43,8 @@
     result = null
     try {
       const r = await loadPnl(token, wallet, {
-        onProgress: (done, total) => {
-          if (id === runId) progress = { done, total }
+        onProgress: (done, total, step) => {
+          if (id === runId) progress = { done, total, step }
         },
       })
       if (id === runId) result = r
@@ -83,7 +83,11 @@
   {:else if loading}
     <p class="msg" role="status">
       {#if progress && progress.total > 0}
-        Pricing movements: {progress.done} / {progress.total} timestamps
+        {#if progress.step === 'classify'}
+          Classifying movements: {progress.done} / {progress.total} transactions
+        {:else}
+          Pricing movements: {progress.done} / {progress.total} timestamps
+        {/if}
         <progress value={progress.done} max={progress.total}></progress>
       {:else}
         Fetching transfers and balance…

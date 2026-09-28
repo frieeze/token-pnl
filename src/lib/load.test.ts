@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import { loadPnl, type Fetchers } from './load'
+import type { MovementClass } from './pnl'
 import type { Movement } from './transfers'
 
 const TOKEN = '0x6982508145454Ce325dDbE47a25d4ec3d2311933'
 const WALLET = '0xF977814e90dA44bFA03b6295A0616a897441aceC'
 
+const PEER = '0x2222222222222222222222222222222222222222'
+
 function mv(direction: Movement['direction'], amount: bigint, timestamp: number): Movement {
-  return { hash: `0x${String(timestamp).padStart(64, '0')}`, blockNumber: BigInt(timestamp), transactionIndex: 0, timestamp, direction, amount }
+  return { hash: `0x${String(timestamp).padStart(64, '0')}`, blockNumber: BigInt(timestamp), transactionIndex: 0, timestamp, direction, counterparty: PEER, amount }
 }
 
 function fakes(overrides: Partial<Fetchers> = {}): Fetchers {
@@ -14,8 +17,9 @@ function fakes(overrides: Partial<Fetchers> = {}): Fetchers {
     fetchTransfers: vi.fn(async () => ({
       symbol: 'TKN',
       decimals: 18,
-      movements: [mv('buy', 10n * 10n ** 18n, 100), mv('sell', 4n * 10n ** 18n, 200)],
+      movements: [mv('in', 10n * 10n ** 18n, 100), mv('out', 4n * 10n ** 18n, 200)],
     })),
+    classifyMovements: vi.fn(async () => ['buy', 'sell'] as MovementClass[]),
     balanceOf: vi.fn(async () => 6n * 10n ** 18n),
     fetchHistoricalPrices: vi.fn(async () => new Map([[100, 1], [200, 3]])),
     fetchCurrentPrice: vi.fn(async () => 5),
@@ -44,6 +48,32 @@ describe('loadPnl', () => {
     expect(f.fetchCurrentPrice).not.toHaveBeenCalled()
   })
 
+  it('uses the classes from the classifier', async () => {
+    const f = fakes({ classifyMovements: vi.fn(async () => ['transferIn', 'deposit'] as MovementClass[]) })
+    const res = await loadPnl(TOKEN, WALLET, { fetchers: f })
+    expect(res.pnl?.rows.map((r) => r.class)).toEqual(['transferIn', 'deposit'])
+    expect(res.pnl?.totals.realized).toBe(0)
+    expect(f.classifyMovements).toHaveBeenCalledWith(TOKEN, WALLET, expect.any(Array), expect.anything())
+  })
+
+  it('fails the load when the classifier fails', async () => {
+    const f = fakes({ classifyMovements: vi.fn(async () => Promise.reject(new Error('RPC request failed while classifying movements: boom'))) })
+    await expect(loadPnl(TOKEN, WALLET, { fetchers: f })).rejects.toThrow(/classifying movements/)
+    expect(f.fetchHistoricalPrices).not.toHaveBeenCalled()
+  })
+
+  it('forwards classifying progress', async () => {
+    const f = fakes({
+      classifyMovements: vi.fn(async (_t, _w, _m, opts) => {
+        opts?.onProgress?.(1, 2)
+        return ['buy', 'sell'] as MovementClass[]
+      }),
+    })
+    const onProgress = vi.fn()
+    await loadPnl(TOKEN, WALLET, { fetchers: f, onProgress })
+    expect(onProgress).toHaveBeenCalledWith(1, 2, 'classify')
+  })
+
   it('forwards pricing progress', async () => {
     const f = fakes({
       fetchHistoricalPrices: vi.fn(async (_t, _ts, opts) => {
@@ -53,7 +83,7 @@ describe('loadPnl', () => {
     })
     const onProgress = vi.fn()
     await loadPnl(TOKEN, WALLET, { fetchers: f, onProgress })
-    expect(onProgress).toHaveBeenCalledWith(2, 2)
+    expect(onProgress).toHaveBeenCalledWith(2, 2, 'price')
   })
 
   it('leaves a movement DefiLlama has no price for unpriced', async () => {
