@@ -19,9 +19,12 @@ Amounts are kept as raw integers (`bigint`) and converted with the token's decim
 Each movement gets one class (D10). The **other legs** of its transaction are what the wallet sent or received
 in that tx besides this token:
 
-- another ERC-20 `Transfer` log to or from the wallet;
+- another ERC-20 `Transfer` log to or from the wallet, with a non-zero value;
 - ETH sent: the tx is from the wallet and its `value` > 0;
 - ETH received: the tx is from the wallet and its logs hold a WETH `Withdrawal` (the router unwrapped WETH for it).
+
+Other legs in the same direction as the movement do not count, so rules 5–8 still apply
+(e.g. claiming two reward tokens at once).
 
 Rules, first match wins:
 
@@ -33,7 +36,7 @@ Rules, first match wins:
 | 4 | out | ETH or another token in | sell |
 | 5 | in | from `0x0` (mint), no other leg | reward |
 | 6 | out | to a contract, no other leg | deposit |
-| 7 | in | from a contract with deposits still out (by the classifier's own count for that contract), no other leg | withdraw |
+| 7 | in | from a contract with an amount still deposited with it (rule 6 deposits minus rule 7 withdrawals, by the classifier's own count for that contract), no other leg | withdraw |
 | 8 | in | from a contract, no other leg | reward |
 | 9 | out | to a wallet (EOA) | transfer out |
 | 10 | in | from a wallet (EOA) | transfer in |

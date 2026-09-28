@@ -15,7 +15,7 @@ export interface RulesInput {
   token: Address
   wallet: Address
   /** In chain order. */
-  movements: readonly Pick<Movement, 'hash' | 'direction' | 'counterparty'>[]
+  movements: readonly Pick<Movement, 'hash' | 'direction' | 'counterparty' | 'amount'>[]
   txs: ReadonlyMap<Hash, TxData>
   /** Counterparties with code at the latest block (checksummed, like `Movement.counterparty`). */
   contracts: ReadonlySet<Address>
@@ -40,6 +40,9 @@ function legs(tx: TxData, token: Address, wallet: Address) {
     if (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)) unwrapped = true
     // ERC-20 Transfer only: ERC-721 has a fourth topic (the token id).
     if (log.topics[0] !== TRANSFER || log.topics.length !== 3 || isAddressEqual(log.address, token)) continue
+    // A zero-value transfer moves nothing (often address-poisoning spam): not a leg. The regex
+    // also covers empty data (`0x`), where BigInt() would throw.
+    if (/^0x0*$/.test(log.data)) continue
     const from = topicAddress(log.topics[1]!)
     const to = topicAddress(log.topics[2]!)
     if (isAddressEqual(to, wallet)) {
@@ -73,19 +76,20 @@ function legRule(m: RulesMovement, tx: TxData, token: Address, wallet: Address):
 
 /** Applies the rules table (first match wins) to each movement, in chain order. */
 export function applyRules(input: RulesInput): MovementClass[] {
-  // Rule 7: deposits (rule 6) still out, per contract, by our own count.
-  const depositsOut = new Map<Address, number>()
+  // Rule 7: amount deposited (rule 6) and not yet withdrawn, per contract, by our own count.
+  const depositsOut = new Map<Address, bigint>()
   return input.movements.map((m) => {
     const byLegs = legRule(m, input.txs.get(m.hash)!, input.token, input.wallet)
     if (byLegs) return byLegs
     if (!input.contracts.has(m.counterparty)) return m.direction === 'out' ? 'transferOut' : 'transferIn'
-    const out = depositsOut.get(m.counterparty) ?? 0
+    const out = depositsOut.get(m.counterparty) ?? 0n
     if (m.direction === 'out') {
-      depositsOut.set(m.counterparty, out + 1)
+      depositsOut.set(m.counterparty, out + m.amount)
       return 'deposit'
     }
-    if (out === 0) return 'reward'
-    depositsOut.set(m.counterparty, out - 1)
+    if (out === 0n) return 'reward'
+    // The engine counts any excess over the amount out as a reward.
+    depositsOut.set(m.counterparty, m.amount < out ? out - m.amount : 0n)
     return 'withdraw'
   })
 }
@@ -128,10 +132,10 @@ export async function classifyMovements(
   opts: ClassifyOptions = {},
 ): Promise<MovementClass[]> {
   const client = opts.publicClient ?? defaultClient()
-  try {
-    const hashes = [...new Set(movements.map((m) => m.hash))]
-    opts.onProgress?.(0, hashes.length)
-    const fetched = await inChunks(
+  const hashes = [...new Set(movements.map((m) => m.hash))]
+  opts.onProgress?.(0, hashes.length)
+  const fetched = await rpc(
+    inChunks(
       hashes,
       TXS_PER_CHUNK,
       async (hash) => {
@@ -139,16 +143,23 @@ export async function classifyMovements(
         return [hash, { from: tx.from, value: tx.value, logs: receipt.logs }] as const
       },
       (done) => opts.onProgress?.(done, hashes.length),
-    )
-    const txs = new Map<Hash, TxData>(fetched)
+    ),
+  )
+  const txs = new Map<Hash, TxData>(fetched)
 
-    const toCheck = [
-      ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallet)).map((m) => m.counterparty)),
-    ]
-    const codes = await inChunks(toCheck, CODES_PER_CHUNK, (address) => client.getCode({ address }))
-    const contracts = new Set(toCheck.filter((_, i) => codes[i] !== undefined && codes[i] !== '0x'))
+  const toCheck = [
+    ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallet)).map((m) => m.counterparty)),
+  ]
+  const codes = await rpc(inChunks(toCheck, CODES_PER_CHUNK, (address) => client.getCode({ address })))
+  const contracts = new Set(toCheck.filter((_, i) => codes[i] !== undefined && codes[i] !== '0x'))
 
-    return applyRules({ token, wallet, movements, txs, contracts })
+  return applyRules({ token, wallet, movements, txs, contracts })
+}
+
+/** Rethrows an RPC failure with a message the page can show. */
+async function rpc<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request
   } catch (err) {
     const detail = (err as { shortMessage?: string })?.shortMessage ?? (err instanceof Error ? err.message : String(err))
     throw new Error(`RPC request failed while classifying movements: ${detail}`)

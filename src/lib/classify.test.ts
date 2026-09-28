@@ -14,10 +14,10 @@ const POOL = '0x1111111111111111111111111111111111111111'
 const PEER = '0x2222222222222222222222222222222222222222'
 const HASH: Hash = `0x${'ab'.repeat(32)}`
 
-const transfer = (token: Address, from: Address, to: Address) => ({
+const transfer = (token: Address, from: Address, to: Address, value = 1n) => ({
   address: token.toLowerCase() as Address,
   topics: encodeEventTopics({ abi: erc20Abi, eventName: 'Transfer', args: { from, to } }) as Hash[],
-  data: numberToHex(1n, { size: 32 }),
+  data: numberToHex(value, { size: 32 }),
 })
 const wethWithdrawal = {
   address: WETH.toLowerCase() as Address,
@@ -31,8 +31,8 @@ const nftTransfer = {
   data: '0x' as Hash,
 }
 
-type Mv = Pick<Movement, 'hash' | 'direction' | 'counterparty'>
-const mv = (direction: Movement['direction'], counterparty: Address = POOL, hash: Hash = HASH): Mv => ({ hash, direction, counterparty })
+type Mv = Pick<Movement, 'hash' | 'direction' | 'counterparty' | 'amount'>
+const mv = (direction: Movement['direction'], counterparty: Address = POOL, hash: Hash = HASH, amount = 1n): Mv => ({ hash, direction, counterparty, amount })
 const tx = (overrides: Partial<TxData> = {}): TxData => ({ from: PEER, value: 0n, logs: [], ...overrides })
 
 function classifyOne(m: Mv, t: TxData, contracts: Address[] = [POOL]) {
@@ -61,6 +61,7 @@ describe('applyRules', () => {
     ['another transfer of this token', mv('in'), tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, PEER), transfer(TOKEN, POOL, WALLET)] }), 'reward'],
     ['ETH sent by someone else', mv('in', PEER), tx({ value: 1n, logs: [transfer(TOKEN, PEER, WALLET)] }), 'transferIn'],
     ['WETH unwrapped in a tx the wallet did not send', mv('out'), tx({ logs: [transfer(TOKEN, WALLET, POOL), wethWithdrawal] }), 'deposit'],
+    ['a zero-value transfer of another token', mv('in', PEER), tx({ from: WALLET, logs: [transfer(OTHER_TOKEN, WALLET, PEER, 0n), transfer(TOKEN, PEER, WALLET)] }), 'transferIn'],
     ['an NFT transfer', mv('in'), tx({ from: WALLET, logs: [nftTransfer, transfer(TOKEN, POOL, WALLET)] }), 'reward'],
   ] as const)('does not count %s as a leg', (_name, m, t, expected) => {
     expect(classifyOne(m, t)).toBe(expected)
@@ -71,21 +72,20 @@ describe('applyRules', () => {
     expect(classifyOne(mv('in'), t)).toBe('reward')
   })
 
-  it('rule 7: in from a contract with deposits still out → withdraw, counted per contract in chain order', () => {
+  it('rule 7: in from a contract with an amount still deposited → withdraw, tracked per contract in chain order', () => {
     const VAULT = '0x3333333333333333333333333333333333333333'
     const h = (n: number): Hash => `0x${String(n).padStart(64, '0')}`
     const movements = [
-      mv('in', POOL, h(1)), // nothing deposited yet: reward
-      mv('out', POOL, h(2)), // deposit #1
-      mv('out', POOL, h(3)), // deposit #2
-      mv('in', VAULT, h(4)), // other contract, nothing out there: reward
-      mv('in', POOL, h(5)), // withdraw (1 left)
-      mv('in', POOL, h(6)), // withdraw (0 left)
-      mv('in', POOL, h(7)), // reward
+      mv('in', POOL, h(1), 10n), // nothing deposited yet: reward
+      mv('out', POOL, h(2), 100n), // deposit: 100 out
+      mv('in', VAULT, h(3), 10n), // other contract, nothing out there: reward
+      mv('in', POOL, h(4), 50n), // withdraw: 50 left
+      mv('in', POOL, h(5), 50n), // withdraw: 0 left
+      mv('in', POOL, h(6), 10n), // reward
     ]
     const txs = new Map(movements.map((m) => [m.hash, tx()]))
     const classes = applyRules({ token: TOKEN, wallet: WALLET, movements, txs, contracts: new Set([POOL, VAULT]) })
-    expect(classes).toEqual(['reward', 'deposit', 'deposit', 'reward', 'withdraw', 'withdraw', 'reward'])
+    expect(classes).toEqual(['reward', 'deposit', 'reward', 'withdraw', 'withdraw', 'reward'])
   })
 })
 
