@@ -11,6 +11,8 @@ import {
   type PublicClient,
 } from 'viem'
 import { mainnet } from 'viem/chains'
+import { readCache, writeCache, type CacheStorage } from './cache'
+import { fetchWithRetry } from './http'
 
 export type Direction = 'in' | 'out'
 
@@ -45,6 +47,13 @@ export interface FetchTransfersOptions {
   pageSize?: number
   /** viem client used to read `symbol`/`decimals` on-chain when there are no transfers. */
   publicClient?: ReadContractClient
+  /** Injectable sleep for retry backoff, so tests don't really wait; defaults to a real one. */
+  sleep?: (ms: number) => Promise<void>
+  /**
+   * Where transfer history is cached per (token, wallet), so a reload only fetches what's new.
+   * Defaults to `localStorage` when available. Pass `null` to disable caching.
+   */
+  cache?: CacheStorage | null
 }
 
 export interface BalanceOfOptions {
@@ -66,6 +75,8 @@ const DEFAULT_BASE_URL = 'https://eth.blockscout.com/api'
 // ordinary `status: "0"` JSON body, not an HTTP error.
 const DEFAULT_PAGE_SIZE = 5000
 
+const DEFAULT_TIMEOUT_MS = 15_000
+
 // `tokentx` only exposes page * offset <= 10,000 rows per query; past that it answers
 // "Result window is too large" (checked live 2026-09-27, as was `startblock` with `sort=asc`).
 // A full window can end mid-block and rows have no log index, so its last block is dropped
@@ -74,6 +85,15 @@ const RESULT_WINDOW = 10_000
 
 // Safety cap on the whole history, so a huge wallet fails clearly instead of loading forever.
 const MAX_ROWS = 200_000
+
+/** `localStorage` when available (a browser, not in private mode); `undefined` otherwise. */
+function defaultCacheStorage(): CacheStorage | undefined {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : undefined
+  } catch {
+    return undefined
+  }
+}
 
 // Lazily-created, shared across calls that don't inject their own client, so we don't
 // spin up a new viem client (and its transport) per call.
@@ -132,12 +152,14 @@ async function fetchAllRows(
   fetchFn: typeof globalThis.fetch,
   baseUrl: string,
   pageSize: number,
+  sleep: ((ms: number) => Promise<void>) | undefined,
+  initialStartblock = '0',
 ): Promise<BlockscoutTx[]> {
   const rows: BlockscoutTx[] = []
-  let startblock = '0'
+  let startblock = initialStartblock
 
   for (;;) {
-    const { rows: windowRows, full } = await fetchWindow(token, wallet, fetchFn, baseUrl, pageSize, startblock)
+    const { rows: windowRows, full } = await fetchWindow(token, wallet, fetchFn, baseUrl, pageSize, startblock, sleep)
     // The block we start from was just seen, so an empty continuation means inconsistent data.
     if (startblock !== '0' && windowRows.length === 0) {
       throw new Error(`Blockscout returned no transfers from block ${startblock}, which it listed just before; try again`)
@@ -172,22 +194,13 @@ async function fetchWindow(
   baseUrl: string,
   pageSize: number,
   startblock: string,
+  sleep: ((ms: number) => Promise<void>) | undefined,
 ): Promise<{ rows: BlockscoutTx[]; full: boolean }> {
   const rows: BlockscoutTx[] = []
 
   for (let page = 1; ; page++) {
     const url = buildUrl(baseUrl, token, wallet, startblock, page, pageSize)
-    const res = await fetchFn(url)
-    if (!res.ok) {
-      let detail: string = res.statusText
-      try {
-        const errorBody = await res.json()
-        if (typeof errorBody?.message === 'string' && errorBody.message) detail = errorBody.message
-      } catch {
-        // body wasn't JSON: fall back to statusText, already the default
-      }
-      throw new Error(`Blockscout request failed: ${res.status} ${detail}`)
-    }
+    const res = await fetchWithRetry(url, fetchFn, { timeoutMs: DEFAULT_TIMEOUT_MS, label: 'Blockscout', sleep })
 
     let body: BlockscoutResponse
     try {
@@ -260,12 +273,22 @@ export async function fetchTransfers(
   const fetchFn = opts.fetch ?? globalThis.fetch
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL
   const pageSize = opts.pageSize ?? DEFAULT_PAGE_SIZE
+  const cacheStorage = opts.cache === null ? undefined : (opts.cache ?? defaultCacheStorage())
 
   let first: BlockscoutTx | undefined
   const movements: Movement[] = []
   // One wallet at a time: parallel requests would trip Blockscout's IP rate limit sooner.
   for (const wallet of walletAddrs) {
-    const walletRows = await fetchAllRows(tokenAddr, wallet, fetchFn, baseUrl, pageSize)
+    const cached = readCache(cacheStorage, tokenAddr, wallet)
+    // The cached rows' last block may not have been fully indexed by Blockscout yet when it was
+    // saved, so it's dropped and refetched whole along with anything newer.
+    const resumeFrom = cached && cached.length > 0 ? cached[cached.length - 1]!.blockNumber : undefined
+    const kept = cached && resumeFrom !== undefined ? cached.filter((r) => r.blockNumber !== resumeFrom) : []
+
+    const fetched = await fetchAllRows(tokenAddr, wallet, fetchFn, baseUrl, pageSize, opts.sleep, resumeFrom)
+    const walletRows = kept.concat(fetched)
+    writeCache(cacheStorage, tokenAddr, wallet, walletRows)
+
     first ??= walletRows[0]
     for (const row of walletRows) {
       const m = toMovement(row, wallet, walletAddrs)

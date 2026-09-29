@@ -127,7 +127,7 @@ describe('fetchHistoricalPrices', () => {
     }
   })
 
-  it('retries once on a 500 and gives up with an error if it fails again', async () => {
+  it('gives up after 3 retries on a persistent 500, with the status in the message', async () => {
     vi.useFakeTimers()
     try {
       const fetchMock = vi.fn(async () => jsonResponse({ error: 'boom' }, 500))
@@ -135,11 +135,11 @@ describe('fetchHistoricalPrices', () => {
       const promise = fetchHistoricalPrices(TOKEN, [1727395200], { fetch: fetchMock })
       // Attach a rejection handler immediately so the unresolved promise
       // doesn't trigger an unhandled-rejection warning while timers advance.
-      const assertion = expect(promise).rejects.toThrow()
+      const assertion = expect(promise).rejects.toThrow(/500/)
       await vi.runAllTimersAsync()
       await assertion
 
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(4) // initial attempt + 3 retries
     } finally {
       vi.useRealTimers()
     }
@@ -305,7 +305,7 @@ describe('fetchHistoricalPrices', () => {
     }
   })
 
-  it('gives up with a clear error if a request times out twice', async () => {
+  it('gives up with a clear error after 3 retries when every request times out', async () => {
     vi.useFakeTimers()
     try {
       const fetchMock = vi.fn(async () => {
@@ -317,7 +317,7 @@ describe('fetchHistoricalPrices', () => {
       await vi.runAllTimersAsync()
       await assertion
 
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(4) // initial attempt + 3 retries
     } finally {
       vi.useRealTimers()
     }
@@ -337,9 +337,9 @@ describe('fetchHistoricalPrices', () => {
       await vi.runAllTimersAsync()
       await assertion
 
-      // Only the first chunk's requests (initial attempt + retry) are made;
+      // Only the first chunk's requests (initial attempt + 3 retries) are made;
       // the worker never starts chunk 2 or 3.
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(fetchMock).toHaveBeenCalledTimes(4)
     } finally {
       vi.useRealTimers()
     }

@@ -14,6 +14,9 @@ Each movement's class can be changed to any class of the same direction with the
 Class column; overridden rows are marked. Overrides are stored in the `overrides` URL param, so a
 shared link reproduces the same result.
 
+Each wallet's transfer history is cached in the browser's localStorage, so a reload only fetches
+new transfers. Rate-limited or failed API calls (429, 5xx, timeouts) are retried up to 3 times.
+
 ## Docs
 
 - [docs/overview.md](docs/overview.md): problem, approach, data sources

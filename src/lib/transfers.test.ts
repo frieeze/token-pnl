@@ -235,8 +235,8 @@ describe('fetchTransfers', () => {
     await expect(fetchTransfers('not-an-address', [WALLET])).rejects.toThrow(/invalid token/i)
   })
 
-  it('throws on an HTTP error, falling back to statusText when the body is not JSON', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce({
+  it('gives up after retries on a persistent HTTP error, falling back to statusText when the body is not JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
       statusText: 'Server Error',
@@ -244,23 +244,74 @@ describe('fetchTransfers', () => {
         throw new SyntaxError('not json')
       },
     })
+    const sleep = vi.fn(async () => {})
 
-    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })).rejects.toThrow(/500 Server Error/)
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, sleep })).rejects.toThrow(/500 Server Error/)
+    expect(fetchMock).toHaveBeenCalledTimes(4) // initial attempt + 3 retries
+    expect(sleep).toHaveBeenCalledTimes(3)
   })
 
-  it('throws on an HTTP error, using the JSON body message when present (e.g. a 429)', async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce({
+  it('gives up after retries on a persistent 429, using the JSON body message when present', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 429,
       statusText: 'Too Many Requests',
+      headers: { get: () => null },
       json: async () => ({
         message: 'Too many requests. Increase limits now at https://dev.blockscout.com',
       }),
     })
+    const sleep = vi.fn(async () => {})
 
-    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })).rejects.toThrow(
+    await expect(fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, sleep })).rejects.toThrow(
       /429 Too many requests\. Increase limits now at/,
     )
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('succeeds after a 429 followed by a successful retry', async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async () => {
+      calls++
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { get: () => null },
+          json: async () => ({ message: 'Too many requests' }),
+        }
+      }
+      return okResponse([row()])
+    })
+    const sleep = vi.fn(async () => {})
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, sleep })
+
+    expect(result.movements).toHaveLength(1)
+    expect(sleep).toHaveBeenCalledTimes(1)
+  })
+
+  it('honors a Retry-After header from Blockscout instead of the default backoff', async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async () => {
+      calls++
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { get: (name: string) => (name === 'retry-after' ? '2' : null) },
+          json: async () => ({ message: 'Too many requests' }),
+        }
+      }
+      return okResponse([row()])
+    })
+    const sleep = vi.fn(async () => {})
+
+    await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock as never, sleep })
+
+    expect(sleep).toHaveBeenCalledWith(2000)
   })
 
   it('continues past the 10,000-result cap by block range, with no duplicate or lost row at the boundaries', async () => {
@@ -394,6 +445,120 @@ describe('fetchTransfers', () => {
     const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock })
 
     expect(result.movements).toEqual([])
+  })
+})
+
+describe('fetchTransfers caching', () => {
+  /** In-memory fake of the `Storage` slice `cache.ts` uses. */
+  function fakeStorage(initial: Record<string, string> = {}) {
+    const store = new Map(Object.entries(initial))
+    return {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value)
+      },
+      removeItem: (key: string) => {
+        store.delete(key)
+      },
+      key: (i: number) => Array.from(store.keys())[i] ?? null,
+      get length() {
+        return store.size
+      },
+    }
+  }
+
+  const cacheKeyFor = (token: string, wallet: string) => `token-pnl:transfers:${token.toLowerCase()}:${wallet.toLowerCase()}`
+
+  it('with no cached entry, fetches from block 0 and saves the result', async () => {
+    const storage = fakeStorage()
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row({ hash: '0x01', blockNumber: '100' })]))
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, cache: storage })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('startblock=0')
+    expect(result.movements).toHaveLength(1)
+    const saved = JSON.parse(storage.getItem(cacheKeyFor(TOKEN, WALLET))!)
+    expect(saved).toEqual({ v: 1, rows: [row({ hash: '0x01', blockNumber: '100' })] })
+  })
+
+  it('with a cached entry, drops the last cached block and resumes the fetch from it', async () => {
+    const cachedRows = [
+      row({ hash: '0x01', blockNumber: '100' }),
+      row({ hash: '0x02', blockNumber: '200' }),
+    ]
+    const storage = fakeStorage({
+      [cacheKeyFor(TOKEN, WALLET)]: JSON.stringify({ v: 1, rows: cachedRows }),
+    })
+    // Blockscout now has one more row in the previously-last block, plus a new one.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        okResponse([
+          row({ hash: '0x02', blockNumber: '200' }),
+          row({ hash: '0x02b', blockNumber: '200' }),
+          row({ hash: '0x03', blockNumber: '300' }),
+        ]),
+      )
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, cache: storage })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('startblock=200')
+    expect(result.movements.map((m) => m.hash)).toEqual(['0x01', '0x02', '0x02b', '0x03'])
+  })
+
+  it('gives the same movements, in the same order, whether served from cache or a full fetch', async () => {
+    const rows = [
+      row({ hash: '0x01', blockNumber: '100', transactionIndex: '0' }),
+      row({ hash: '0x02', blockNumber: '200', transactionIndex: '0' }),
+    ]
+
+    const freshFetch = vi.fn().mockResolvedValueOnce(okResponse(rows))
+    const freshResult = await fetchTransfers(TOKEN, [WALLET], { fetch: freshFetch, cache: undefined })
+
+    const storage = fakeStorage({ [cacheKeyFor(TOKEN, WALLET)]: JSON.stringify({ v: 1, rows: rows.slice(0, 1) }) })
+    // Resuming refetches from the cached block onward (block 100), so both rows come back.
+    const cachedFetch = vi.fn().mockResolvedValueOnce(okResponse(rows))
+    const cachedResult = await fetchTransfers(TOKEN, [WALLET], { fetch: cachedFetch, cache: storage })
+
+    expect(cachedResult.movements).toEqual(freshResult.movements)
+    // Same override keys (hash:indexInTx) either way.
+    const keysOf = (movements: typeof freshResult.movements) =>
+      movements.map((m) => `${m.hash}:${m.transactionIndex}`)
+    expect(keysOf(cachedResult.movements)).toEqual(keysOf(freshResult.movements))
+  })
+
+  it('falls back to a full fetch when the cached entry is corrupt', async () => {
+    const storage = fakeStorage({ [cacheKeyFor(TOKEN, WALLET)]: '{not json' })
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row({ hash: '0x01', blockNumber: '100' })]))
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, cache: storage })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('startblock=0')
+    expect(result.movements).toHaveLength(1)
+  })
+
+  it('falls back to a full fetch when the cached entry has the wrong schema version', async () => {
+    const storage = fakeStorage({
+      [cacheKeyFor(TOKEN, WALLET)]: JSON.stringify({ v: 999, rows: [row({ hash: '0x01', blockNumber: '100' })] }),
+    })
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row({ hash: '0x02', blockNumber: '200' })]))
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, cache: storage })
+
+    expect(fetchMock.mock.calls[0][0]).toContain('startblock=0')
+    expect(result.movements.map((m) => m.hash)).toEqual(['0x02'])
+  })
+
+  it('does not break the load if saving to the cache fails (quota)', async () => {
+    const storage = fakeStorage()
+    storage.setItem = () => {
+      throw new DOMException('quota exceeded', 'QuotaExceededError')
+    }
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([row({ hash: '0x01', blockNumber: '100' })]))
+
+    const result = await fetchTransfers(TOKEN, [WALLET], { fetch: fetchMock, cache: storage })
+
+    expect(result.movements).toHaveLength(1)
   })
 })
 
