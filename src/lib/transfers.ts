@@ -11,7 +11,7 @@ import {
   type PublicClient,
 } from 'viem'
 import { mainnet } from 'viem/chains'
-import { readCache, writeCache, type CacheStorage } from './cache'
+import { defaultCacheStorage, readCache, writeCache, type CacheStorage } from './cache'
 import { fetchWithRetry } from './http'
 
 export type Direction = 'in' | 'out'
@@ -85,15 +85,6 @@ const RESULT_WINDOW = 10_000
 
 // Safety cap on the whole history, so a huge wallet fails clearly instead of loading forever.
 const MAX_ROWS = 200_000
-
-/** `localStorage` when available (a browser, not in private mode); `undefined` otherwise. */
-function defaultCacheStorage(): CacheStorage | undefined {
-  try {
-    return typeof localStorage !== 'undefined' ? localStorage : undefined
-  } catch {
-    return undefined
-  }
-}
 
 // Lazily-created, shared across calls that don't inject their own client, so we don't
 // spin up a new viem client (and its transport) per call.

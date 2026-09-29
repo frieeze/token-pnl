@@ -14,7 +14,8 @@ and what the remaining balance is worth now.
    (`src/lib/http.ts`); each wallet's transfer history is cached in localStorage and a reload only fetches
    what's new since the last cached block (`src/lib/cache.ts`).
 2. **Classify each movement.** Buy, sell, deposit, withdraw, reward, transfer in/out (D10).
-   This decides how it affects cost basis.
+   This decides how it affects cost basis. Each tx's `from`, `value` and the logs the rules read are
+   cached in localStorage per hash (`src/lib/cache.ts`), so a reload only re-fetches txs not seen before.
 3. **Price each movement** at its time (the hard part, see below).
 4. **Run the accounting.** Cost basis method on the ordered list of movements, giving realized PnL
    on disposals.
