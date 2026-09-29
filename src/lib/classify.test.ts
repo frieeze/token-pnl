@@ -1,6 +1,7 @@
 import { encodeEventTopics, erc20Abi, erc721Abi, numberToHex, parseAbi, zeroAddress, type Address, type Hash } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 import { applyRules, classifyMovements, type TxData } from './classify'
+import { readTxCache, writeTxCache, type CacheStorage } from './cache'
 import type { Movement } from './transfers'
 
 // Not ambiently declared under tsconfig.app.json (see transfers.test.ts).
@@ -203,6 +204,129 @@ describe('classifyMovements', () => {
     await classifyMovements(TOKEN, [WALLET], movements, { publicClient: client, onProgress })
     expect(onProgress.mock.calls).toEqual([[0, 2], [2, 2]])
     expect(client.getTransaction).toHaveBeenCalledTimes(2)
+  })
+
+  describe('tx cache', () => {
+    /** In-memory fake of the `Storage` slice the cache uses. */
+    function fakeStorage(initial: Record<string, string> = {}): CacheStorage {
+      const store = new Map(Object.entries(initial))
+      return {
+        getItem: (key) => store.get(key) ?? null,
+        setItem: (key, value) => {
+          store.set(key, value)
+        },
+        removeItem: (key) => {
+          store.delete(key)
+        },
+        key: (i) => Array.from(store.keys())[i] ?? null,
+        get length() {
+          return store.size
+        },
+      }
+    }
+
+    // A Swap log: same shape as a real one, but a selector the rules never read.
+    const swapLog: TxData['logs'][number] = {
+      address: POOL,
+      topics: ['0x' + 'cd'.repeat(32)] as Hash[],
+      data: numberToHex(1n, { size: 32 }),
+    }
+
+    it('does not refetch a cached tx, only the missing ones', async () => {
+      const cache = fakeStorage()
+      const cachedTx = tx({ from: WALLET, logs: [transfer(TOKEN, WALLET, POOL)] })
+      writeTxCache(cache, h(1), { from: cachedTx.from, value: cachedTx.value.toString(), logs: [...cachedTx.logs] })
+      const client = stubClient({ [h(1)]: cachedTx, [h(2)]: tx({ logs: [transfer(TOKEN, PEER, WALLET)] }) }, [POOL])
+      const movements = [movement(1, 'out', POOL), movement(2, 'in', PEER)]
+
+      const classes = await classifyMovements(TOKEN, [WALLET], movements, { publicClient: client, cache })
+
+      expect(classes).toEqual(['deposit', 'transferIn'])
+      expect(client.getTransaction).toHaveBeenCalledTimes(1)
+      expect(client.getTransaction).toHaveBeenCalledWith({ hash: h(2) })
+    })
+
+    it('caches a fetched tx, keeping only the logs the rules read', async () => {
+      const cache = fakeStorage()
+      const client = stubClient(
+        { [h(1)]: tx({ from: WALLET, logs: [swapLog, transfer(TOKEN, WALLET, POOL)] }) },
+        [],
+      )
+
+      await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', POOL)], { publicClient: client, cache })
+
+      const cached = readTxCache(cache, h(1))
+      expect(cached?.logs).toHaveLength(1)
+      expect(cached?.logs[0]?.address).toBe(transfer(TOKEN, WALLET, POOL).address)
+    })
+
+    it('counts cached txs as done from the start in onProgress', async () => {
+      const cache = fakeStorage()
+      const cachedTx = tx({ logs: [transfer(TOKEN, PEER, WALLET)] })
+      writeTxCache(cache, h(1), { from: cachedTx.from, value: cachedTx.value.toString(), logs: [...cachedTx.logs] })
+      const client = stubClient({ [h(1)]: cachedTx, [h(2)]: cachedTx }, [])
+      const onProgress = vi.fn()
+
+      await classifyMovements(TOKEN, [WALLET], [movement(1, 'in', PEER), movement(2, 'in', PEER)], {
+        publicClient: client,
+        cache,
+        onProgress,
+      })
+
+      expect(onProgress).toHaveBeenCalledWith(1, 2)
+      expect(onProgress).toHaveBeenLastCalledWith(2, 2)
+    })
+
+    it('classifies the same from cached (filtered) data as from the full receipt', async () => {
+      const fullLogs = [swapLog, transfer(TOKEN, WALLET, POOL), wethWithdrawal]
+      const client = stubClient({ [h(1)]: tx({ from: WALLET, logs: fullLogs }) }, [])
+      const fresh = await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', POOL)], { publicClient: client })
+
+      const cache = fakeStorage()
+      await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', POOL)], { publicClient: client, cache })
+      const fromCacheClient = stubClient({}, [])
+      const fromCache = await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', POOL)], {
+        publicClient: fromCacheClient,
+        cache,
+      })
+
+      expect(fromCache).toEqual(fresh)
+      expect(fromCacheClient.getTransaction).not.toHaveBeenCalled()
+    })
+
+    it('refetches when the cached entry is corrupt or the wrong schema version', async () => {
+      const cache = fakeStorage({ [`token-pnl:tx:${h(1)}`]: '{not json' })
+      const client = stubClient({ [h(1)]: tx({ logs: [transfer(TOKEN, PEER, WALLET)] }) }, [])
+
+      const classes = await classifyMovements(TOKEN, [WALLET], [movement(1, 'in', PEER)], { publicClient: client, cache })
+
+      expect(classes).toEqual(['transferIn'])
+      expect(client.getTransaction).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not break the load on a quota error while caching', async () => {
+      const cache: CacheStorage = {
+        getItem: () => null,
+        setItem: () => {
+          throw new DOMException('quota exceeded', 'QuotaExceededError')
+        },
+        removeItem: vi.fn(),
+        key: () => null,
+        length: 0,
+      }
+      const client = stubClient({ [h(1)]: tx({ logs: [transfer(TOKEN, PEER, WALLET)] }) }, [])
+
+      const classes = await classifyMovements(TOKEN, [WALLET], [movement(1, 'in', PEER)], { publicClient: client, cache })
+
+      expect(classes).toEqual(['transferIn'])
+    })
+
+    it('does not use the cache when cache is null', async () => {
+      const client = stubClient({ [h(1)]: tx({ logs: [transfer(TOKEN, PEER, WALLET)] }) }, [])
+      const classes = await classifyMovements(TOKEN, [WALLET], [movement(1, 'in', PEER)], { publicClient: client, cache: null })
+      expect(classes).toEqual(['transferIn'])
+      expect(client.getTransaction).toHaveBeenCalledTimes(1)
+    })
   })
 })
 

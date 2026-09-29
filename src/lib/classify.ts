@@ -1,6 +1,7 @@
 // Movement classifier, as specified in docs/pnl-rules.md (Classification, D10).
 
 import { isAddressEqual, toEventSelector, zeroAddress, type Address, type Hash } from 'viem'
+import { defaultCacheStorage, readTxCache, writeTxCache, type CacheStorage } from './cache'
 import type { MovementClass } from './pnl'
 import { defaultClient, type Movement } from './transfers'
 
@@ -28,6 +29,20 @@ const WITHDRAWAL = toEventSelector('Withdrawal(address,uint256)')
 /** The address in an indexed topic (last 20 bytes). */
 const topicAddress = (topic: Hash) => `0x${topic.slice(26)}` as Address
 
+/**
+ * Only the logs `legs()` reads: `Transfer` logs with 3 topics (any address - the token itself
+ * is excluded there, and caching is shared across tokens), and WETH `Withdrawal` logs. Other
+ * logs (Swap, Sync, Approval…) are dropped before caching, since receipts can be large.
+ * Keep in step with the log checks in `legs()`.
+ */
+function logsForCache(logs: TxData['logs']): TxData['logs'] {
+  return logs.filter(
+    (log) =>
+      (log.topics[0] === TRANSFER && log.topics.length === 3) ||
+      (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)),
+  )
+}
+
 /** What the wallets sent and received in `tx` besides `token` (any of them, D15). */
 function legs(tx: TxData, token: Address, wallets: readonly Address[]) {
   const isWallet = (a: Address) => wallets.some((w) => isAddressEqual(a, w))
@@ -37,6 +52,7 @@ function legs(tx: TxData, token: Address, wallets: readonly Address[]) {
   let minted = false
   let burned = false
   let unwrapped = false
+  // Reading a new kind of log here? Keep it in `logsForCache` too, or cached txs will miss it.
   for (const log of tx.logs) {
     if (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)) unwrapped = true
     // ERC-20 Transfer only: ERC-721 has a fourth topic (the token id).
@@ -106,8 +122,13 @@ export interface TxClient {
 
 export interface ClassifyOptions {
   publicClient?: TxClient
-  /** Transactions fetched so far, out of the distinct tx hashes. */
+  /** Transactions fetched so far, out of the distinct tx hashes (cached ones count from the start). */
   onProgress?: (done: number, total: number) => void
+  /**
+   * Where each tx's classifier data is cached, keyed by hash only (shared across tokens and
+   * wallet sets). Defaults to `localStorage` when available. Pass `null` to disable caching.
+   */
+  cache?: CacheStorage | null
 }
 
 // Calls made in one chunk go out as one JSON-RPC batch (the default client batches up to 100 calls).
@@ -135,21 +156,33 @@ export async function classifyMovements(
   opts: ClassifyOptions = {},
 ): Promise<MovementClass[]> {
   const client = opts.publicClient ?? defaultClient()
+  const cache = opts.cache === null ? undefined : (opts.cache ?? defaultCacheStorage())
   // A tx that touches several wallets is fetched once.
   const hashes = [...new Set(movements.map((m) => m.hash))]
-  opts.onProgress?.(0, hashes.length)
+
+  const txs = new Map<Hash, TxData>()
+  const missing: Hash[] = []
+  for (const hash of hashes) {
+    const cached = readTxCache(cache, hash)
+    if (cached) txs.set(hash, { from: cached.from as Address, value: BigInt(cached.value), logs: cached.logs as TxData['logs'] })
+    else missing.push(hash)
+  }
+
+  opts.onProgress?.(txs.size, hashes.length)
   const fetched = await rpc(
     inChunks(
-      hashes,
+      missing,
       TXS_PER_CHUNK,
       async (hash) => {
         const [tx, receipt] = await Promise.all([client.getTransaction({ hash }), client.getTransactionReceipt({ hash })])
-        return [hash, { from: tx.from, value: tx.value, logs: receipt.logs }] as const
+        const data: TxData = { from: tx.from, value: tx.value, logs: receipt.logs }
+        writeTxCache(cache, hash, { from: data.from, value: data.value.toString(), logs: [...logsForCache(data.logs)] })
+        return [hash, data] as const
       },
-      (done) => opts.onProgress?.(done, hashes.length),
+      (done) => opts.onProgress?.(txs.size + done, hashes.length),
     ),
   )
-  const txs = new Map<Hash, TxData>(fetched)
+  for (const [hash, data] of fetched) txs.set(hash, data)
 
   const toCheck = [
     ...new Set(movements.filter((m) => !legRule(m, txs.get(m.hash)!, token, wallets)).map((m) => m.counterparty)),
