@@ -191,6 +191,15 @@ describe('readTxCache', () => {
     expect(readTxCache(storage, HASH)).toBeNull()
   })
 
+  it.each([
+    ['a non-numeric value', { value: 'abc' }],
+    ['an empty value', { value: '' }],
+    ['a malformed from', { from: '0x123' }],
+  ])('returns null for a parseable entry with %s', (_, bad) => {
+    const storage = fakeStorage({ [`token-pnl:tx:${HASH.toLowerCase()}`]: JSON.stringify({ v: 1, ...txData(), ...bad }) })
+    expect(readTxCache(storage, HASH)).toBeNull()
+  })
+
   it('returns null when storage is undefined', () => {
     expect(readTxCache(undefined, HASH)).toBeNull()
   })

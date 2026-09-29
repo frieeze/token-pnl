@@ -33,6 +33,7 @@ const topicAddress = (topic: Hash) => `0x${topic.slice(26)}` as Address
  * Only the logs `legs()` reads: `Transfer` logs with 3 topics (any address - the token itself
  * is excluded there, and caching is shared across tokens), and WETH `Withdrawal` logs. Other
  * logs (Swap, Sync, Approval…) are dropped before caching, since receipts can be large.
+ * Keep in step with the log checks in `legs()`.
  */
 function logsForCache(logs: TxData['logs']): TxData['logs'] {
   return logs.filter(
@@ -51,6 +52,7 @@ function legs(tx: TxData, token: Address, wallets: readonly Address[]) {
   let minted = false
   let burned = false
   let unwrapped = false
+  // Reading a new kind of log here? Keep it in `logsForCache` too, or cached txs will miss it.
   for (const log of tx.logs) {
     if (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)) unwrapped = true
     // ERC-20 Transfer only: ERC-721 has a fourth topic (the token id).

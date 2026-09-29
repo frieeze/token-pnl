@@ -5,6 +5,8 @@
 // Every read and write is wrapped in try/catch: a missing, corrupt or wrong-version entry just
 // means a full fetch, and a failed write (e.g. quota) means the app runs uncached, as before.
 
+import { isAddress } from 'viem'
+
 /** One cached row: only the fields the app reads off a Blockscout `tokentx` row. */
 export interface CachedRow {
   hash: string
@@ -116,6 +118,9 @@ export function readTxCache(storage: CacheStorage | undefined, hash: string): Ca
     if (!raw) return null
     const entry = JSON.parse(raw) as TxCacheEntry
     if (entry.v !== TX_SCHEMA_VERSION || !Array.isArray(entry.logs)) return null
+    // The caller turns these into an Address and a bigint: a malformed entry must mean a refetch, not a throw.
+    if (typeof entry.value !== 'string' || !/^\d+$/.test(entry.value)) return null
+    if (typeof entry.from !== 'string' || !isAddress(entry.from, { strict: false })) return null
     return { from: entry.from, value: entry.value, logs: entry.logs }
   } catch {
     return null
