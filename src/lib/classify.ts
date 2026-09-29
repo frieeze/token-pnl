@@ -36,11 +36,14 @@ const topicAddress = (topic: Hash) => `0x${topic.slice(26)}` as Address
  * Keep in step with the log checks in `legs()`.
  */
 function logsForCache(logs: TxData['logs']): TxData['logs'] {
-  return logs.filter(
-    (log) =>
-      (log.topics[0] === TRANSFER && log.topics.length === 3) ||
-      (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)),
-  )
+  return logs
+    .filter(
+      (log) =>
+        (log.topics[0] === TRANSFER && log.topics.length === 3) ||
+        (log.topics[0] === WITHDRAWAL && isAddressEqual(log.address, WETH)),
+    )
+    // Real receipt logs also carry bigints (blockNumber…), which JSON.stringify rejects.
+    .map(({ address, topics, data }) => ({ address, topics, data }))
 }
 
 /** What the wallets sent and received in `tx` besides `token` (any of them, D15). */

@@ -260,6 +260,16 @@ describe('classifyMovements', () => {
       expect(cached?.logs[0]?.address).toBe(transfer(TOKEN, WALLET, POOL).address)
     })
 
+    it('caches a real viem receipt log, whose extra fields are bigints', async () => {
+      const cache = fakeStorage()
+      const log = { ...transfer(TOKEN, WALLET, POOL), blockNumber: 1n, logIndex: 0, transactionIndex: 0 }
+      const client = stubClient({ [h(1)]: tx({ from: WALLET, logs: [log] }) }, [])
+
+      await classifyMovements(TOKEN, [WALLET], [movement(1, 'out', POOL)], { publicClient: client, cache })
+
+      expect(readTxCache(cache, h(1))?.logs).toEqual([transfer(TOKEN, WALLET, POOL)])
+    })
+
     it('counts cached txs as done from the start in onProgress', async () => {
       const cache = fakeStorage()
       const cachedTx = tx({ logs: [transfer(TOKEN, PEER, WALLET)] })
