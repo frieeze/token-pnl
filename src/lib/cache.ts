@@ -54,7 +54,11 @@ export function readCache(storage: CacheStorage | undefined, token: string, wall
 export function writeCache(storage: CacheStorage | undefined, token: string, wallet: string, rows: CachedRow[]): void {
   if (!storage) return
   const key = cacheKey(token, wallet)
-  const value = JSON.stringify({ v: SCHEMA_VERSION, rows } satisfies CacheEntry)
+  // Blockscout rows carry ~20 fields (calldata included); keep only ours so the quota lasts.
+  const slim = rows.map(({ hash, blockNumber, transactionIndex, timeStamp, from, to, value, tokenSymbol, tokenDecimal }) => ({
+    hash, blockNumber, transactionIndex, timeStamp, from, to, value, tokenSymbol, tokenDecimal,
+  }))
+  const value = JSON.stringify({ v: SCHEMA_VERSION, rows: slim } satisfies CacheEntry)
   try {
     storage.setItem(key, value)
   } catch {

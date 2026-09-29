@@ -104,6 +104,15 @@ describe('writeCache', () => {
     expect(readCache(storage, TOKEN, WALLET)).toEqual(rows)
   })
 
+  it('keeps only the fields the app reads', () => {
+    const storage = fakeStorage()
+    const raw = { ...row(), input: '0x' + 'ab'.repeat(500), gasUsed: '21000', tokenName: 'USD Coin' }
+
+    writeCache(storage, TOKEN, WALLET, [raw])
+
+    expect(readCache(storage, TOKEN, WALLET)).toEqual([row()])
+  })
+
   it('does nothing when storage is undefined', () => {
     expect(() => writeCache(undefined, TOKEN, WALLET, [row()])).not.toThrow()
   })

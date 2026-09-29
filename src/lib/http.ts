@@ -58,7 +58,7 @@ async function attemptFetch(url: string, doFetch: typeof fetch, timeoutMs: numbe
 
   const detail = await describeErrorBody(res)
   const retryable = res.status === 429 || res.status >= 500
-  throw new FetchFailure(`${res.status} ${detail}`, retryable, retryable && res.status === 429 ? parseRetryAfterMs(res) : undefined)
+  throw new FetchFailure(`${res.status} ${detail}`, retryable, retryable ? parseRetryAfterMs(res) : undefined)
 }
 
 /** Blockscout/DefiLlama error bodies are usually JSON with a `message` field; fall back to statusText. */
